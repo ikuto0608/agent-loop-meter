@@ -1,100 +1,125 @@
-# agent-loop-meter
+# agent-loop-meter — see where a Claude Code loop spends its time
 
-- A Claude Code control-tower session spawns sub-agents that each fix a small thing on a small shop's website; one fix took a median of 74 minutes.
-- This repo measures where that time goes (implementation 33%, tests 37%, queueing 13%, ...) and streams it live.
-- Hooks write events to JSONL, a zero-dependency Node server pushes them over SSE to a browser dashboard. Built at Agent Harness Build Night, 2026-11-17.
+One Claude Code "loop" is: instruction -> implementation -> waiting for tests -> tests -> review -> merge -> live.
+With sub-agents running in parallel, nobody can say where the minutes go. `agent-loop-meter` records
+the loop through Claude Code hooks and shows it live in a browser: who is working, who is waiting, who is
+testing, how long each took. Works in any project; zero dependencies (Python 3 stdlib + Node stdlib).
 
-## 何の問題か
+- [What it measures](#what-it-measures)
+- [How it works](#how-it-works)
+- [Set up in 5 minutes](#set-up-in-5-minutes)
+- [Event format](#event-format)
+- [Example](#example)
+- [No secrets in the log](#no-secrets-in-the-log)
+- [Limits](#limits)
+- [日本語](#日本語)
 
-「ある小さな店のサイト」を、Claude Code の管制塔セッションが出した AI の担当 (サブエージェント) が少しずつ直していく。
-1 本の直し (担当を出してから本番確認まで) に、**中央値 74 分** かかっていた。どこで時間が消えているのかが見えなかったので、見える化した。
+## What it measures
 
-## 「前」の数字 (3 日間・55 本)
+One loop = from the moment an agent is spawned until the change is confirmed live. The meter splits it into
+**working**, **testing**, and **waiting** (for a lock / a queue), and counts milestones (PR, merge, release).
+What counts as "test" or "merge" in *your* project is a list of regexes in `loop-meter.config.json`.
 
-データ: [`data/before-tasks.csv`](data/before-tasks.csv) (1 行 1 本。タイトルは種類に一般化済み)。
-
-| 項目 | 値 |
-|---|---|
-| 1 本の所要 | 中央値 74 分 (真ん中の半分は 52〜104 分)・平均 81 分・最短 32 分・最長 195 分 |
-| 本数 | 55 (担当の報告の表から 28・時刻から推定 27) |
-
-### 段階ごとの割合 (報告のある 28 本・合計 2,505 分)
-
-| 段階 | 割合 |
-|---|---|
-| 実装 | 33% |
-| テスト | 37% |
-| 順番待ち (重いテストの鍵) | 13% |
-| その他 (中断・追加の指示・別の PR 待ち・CI) | 8% |
-| 確認役 (レビュー) | 5% |
-| 反映待ち (マージから本番の版が出るまで・毎回 約 4 分) | 5% |
-
-### 待ちの原因 上位 3
-
-1. **重いテストの鍵の取り合い。** 1 台のマシンで重いテストを 1 本ずつ回すための鍵を、並行する 2〜3 人の担当が取り合う。待ちは 28 本中 13 本で起き、平均 25 分・最大 70 分。
-2. **外の要因での中断。** ネット切れ 30 分、CI のチェックが 10 分付かない、デプロイ先にログインできない、など。
-3. **別の PR 待ち・途中の指示の追加・rebase 後の再実行。**
-
-### 打った手と、その効き
-
-- **変更したファイルから回すテストを選ぶ仕組み**: 対応表にあるものだけ絞り、表にないもの・共通の土台に触れる変更は一式に戻す。全画面の e2e 一式 約 16 分 → 絞れたときは約 7 分 (後の測定は 2 本だけの参考値)。
-- **地図の変更を 1 コマンドにする**: 地図の変更 1 本 195 分 → 70 分。
-
-## 今日作ったもの
+## How it works
 
 ```
- Claude Code (管制塔 + サブエージェント)
+ Claude Code (main session + sub-agents)
         |  hooks: PreToolUse / PostToolUse / SubagentStart / SubagentStop
         v
- hooks/loop-event.py  --(1 行追記)-->  ~/.claude/loop-events.jsonl  <--(1 行追記)--  watch/release-watch.sh
-                                                |                                      (本番の版の見張り)
-                                                | tail (500 ms)
-                                                v
-                                    dashboard/server.mjs  --SSE /events-->  dashboard/index.html
-                                    (依存なしの Node)                      (カード・帯グラフ・順番待ち・「前」との比較)
+ hooks/loop-event.py --(append 1 line)--> ~/.claude/loop-events.jsonl <--(append 1 line)-- watch/release-watch.sh
+        ^                                         |                                          (optional: external deploy)
+        | rules                                   | tail (500 ms)
+ loop-meter.config.json                           v
+                                      dashboard/server.mjs --SSE /events--> dashboard/index.html
+                                      (plain Node)                          (cards, lanes, kinds, optional "before")
 ```
 
-## 使い方
+## Set up in 5 minutes
 
-1. フックを入れる。[`hooks/settings.example.json`](hooks/settings.example.json) の `hooks` を、対象プロジェクトの `.claude/settings.local.json` に足す。`$CLAUDE_PROJECT_DIR` がこのリポの場所を指さないときは、`loop-event.py` の絶対パスに置き換える。
-2. 画面を起動する: `node dashboard/server.mjs [--log <jsonl のパス>] [--port 4317]` を実行し、`http://127.0.0.1:4317` を開く。
-3. (任意) 本番の版の見張り: `watch/release-watch.sh <heroku-app>` (30 秒ごとに `heroku releases -n 1` を見て、版が変わったら `release` を書く)。
-4. 書き先を変えるときは環境変数 `OUT` (既定 `~/.claude/loop-events.jsonl`)。
+1. **Register the hooks.** Copy the `hooks` block of [`hooks/settings.example.json`](hooks/settings.example.json)
+   into your project's `.claude/settings.local.json`. If `$CLAUDE_PROJECT_DIR` is not this repo, put the
+   absolute path of `hooks/loop-event.py` instead.
+2. **Describe your loop** in [`loop-meter.config.json`](loop-meter.config.json) (the repo ships a generic example;
+   point elsewhere with `LOOP_METER_CONFIG=/path/to/file.json`). No file -> built-in defaults, same as the example.
 
-フックが拾うコマンドの種類は `hooks/loop-event.py` の `classify_bash` にある。自分のプロジェクトのテスト・ロックのコマンドに合わせて正規表現を直す。
+   ```json
+   { "rules": [
+     { "match": "\\bpytest\\b",         "kind": "test",      "label": "pytest" },
+     { "match": "\\bmkdir\\s+\\S*\\.lock\\b", "kind": "lock_wait", "label": "lock" },
+     { "match": "\\brmdir\\s+\\S*\\.lock\\b", "kind": "lock_free", "label": "lock" },
+     { "match": "\\bgh\\s+pr\\s+merge\\b", "kind": "merge",     "label": "pr merge" },
+     { "match": "\\bmake deploy\\b",     "kind": "deploy",    "label": "deploy" }
+   ] }
+   ```
 
-## 記録の形
+   First matching rule wins. `kind` is one of `lock_wait`, `lock_got`, `lock_free`, `test`, `merge`, `pr`,
+   `release_check`, `review`, or any word you like (shown as "other" in the dashboard). Semantics:
+   `lock_wait` logs waiting before the command and holding after it; `test` logs start and end;
+   everything else logs once, after the command.
+3. **Start the dashboard:** `node dashboard/server.mjs [--log <jsonl>] [--port 4317] [--before <csv>]`
+   and open `http://127.0.0.1:4317` (add `?lang=ja` for Japanese). Log path defaults to `~/.claude/loop-events.jsonl`;
+   the hook's `OUT` environment variable changes where it writes.
+4. **Optional:** `--before tasks.csv` adds a "before" strip. Columns: `task,category,started,...,impl_min,wait_min,test_min,review_min,deploy_min,other_min`
+   (and optionally `total_min`). Without the flag that section is hidden.
+5. **Optional:** [`watch/release-watch.sh`](watch/release-watch.sh) is an example of watching an external deploy
+   target (Heroku): it writes a `release` event when the release number changes. Replace its probe with yours.
 
-1 行 1 出来事の JSON:
+## Event format
+
+One JSON object per line:
 
 ```json
 {"t":"2026-11-17T19:42:10+09:00","agent":"a1b2c3","kind":"test_start","label":"playwright","bg":false}
 ```
 
-| kind | 出どころ |
+| kind | source |
 |---|---|
-| `agent_spawn` | PreToolUse (Agent)。label は説明の先頭 60 字 |
+| `agent_spawn` | PreToolUse on the Agent tool; label = first 60 chars of its description |
 | `agent_start` / `agent_stop` | SubagentStart / SubagentStop |
-| `lock_wait` / `lock_got` / `lock_free` | 重いテストの鍵 (ディレクトリの mkdir / rmdir) |
-| `test_start` / `test_end` | テストのコマンドの前 / 後 (`bg` はバックグラウンド実行か) |
-| `pr` / `merge` | `gh pr create` / `gh pr merge` の後 |
-| `release_check` | `heroku releases` の後 |
-| `release` | `watch/release-watch.sh` が版の変化を検出 |
+| `lock_wait` / `lock_got` / `lock_free` | rules with kind `lock_wait` (before / after) and `lock_free` |
+| `test_start` / `test_end` | before / after a `test` rule (`bg` = background run) |
+| any other rule kind (`pr`, `merge`, ...) | after the command |
+| `release` | `watch/release-watch.sh` |
 
-## 秘密を残さない設計
+## Example
 
-- コマンドの**全文は書かない**。種類 (`kind`) と短い名前 (`label`) だけを記録する。
-- 環境変数・設定値を出すコマンド (`heroku config`、`releases:info` など) は使わない・拾わない。
-- フックは何も出力せず、失敗しても本体を止めない。`*.jsonl` は `.gitignore` 済み。
+[`examples/small-shop-site/`](examples/small-shop-site/README.md): 55 sub-agent tasks on a small website, median
+74 min per task; tests 37%, implementation 33%, queueing 13%. Run
+`node dashboard/server.mjs --before examples/small-shop-site/before-tasks.csv` to see it as the "before" strip.
+
+## No secrets in the log
+
+- The **command text is never written**: only `kind` and the short `label` from your rule.
+- Avoid rules that match commands printing secrets (config dumps, token commands).
+- The hook prints nothing and never fails the host; `*.jsonl` is git-ignored.
+
+## Limits
+
+- The end of a background test is not observed (the end hook fires when it is started).
+- Lock logic assumes one lock command pair; unknown kinds are counted but not drawn as lane phases.
+- Regex matching sees commands, not outcomes: a failed test still counts as a test.
+- Parallel review and test time overlap, so stage sums can exceed the total.
+- The example data is partly estimated (see its README); its waiting numbers are lower bounds.
+
+License: MIT (`LICENSE`).
+
+---
+
+# 日本語
+
+Claude Code の 1 ループ (指示 -> 実装 -> テスト待ち -> テスト -> レビュー -> マージ -> 反映) の時間が、サブエージェント込みで**どこに消えているか**を見える化するツールです。フックで出来事を JSONL に記録し、ブラウザでリアルタイムに表示します。依存ライブラリはありません。
+
+## 入れ方 (5 分)
+
+1. `hooks/settings.example.json` の `hooks` を、対象プロジェクトの `.claude/settings.local.json` に足す。
+2. `loop-meter.config.json` の `rules` に、自分のプロジェクトのテスト・マージ・ロックのコマンドを正規表現で書く (`match` / `kind` / `label`)。場所を変えるときは環境変数 `LOOP_METER_CONFIG`。無ければ既定の例で動く。
+3. `node dashboard/server.mjs` を起動して `http://127.0.0.1:4317/?lang=ja` を開く。
+4. 任意: `--before <csv>` で「前」の内訳の帯を出す。無ければその区画は隠れる。
+
+## 仕組みと安全
+
+フックが 1 出来事 1 行を `~/.claude/loop-events.jsonl` に追記し、Node のサーバが SSE でブラウザに流す。コマンドの**全文は記録せず**、種類 (`kind`) と短い名前 (`label`) だけ残す。事例は [`examples/small-shop-site/`](examples/small-shop-site/README.md) (小さな店のサイトの直し 55 本・中央値 74 分)。
 
 ## 限界
 
-- 「前」の 27 本は**推定**。順番待ちと確認役を記録から拾えず実装に入っているので、待ちは下限。割合は報告のある 28 本で出している。
-- 所要時間は担当を出してから最後の記録まで。本番の版が出た後の確認と片付けまで入る。
-- バックグラウンドで走らせたテストの**終わりは拾えない** (終わりのフックが走るのは起動したとき)。
-- 並行実行した確認役とテストの時間は重なるため、段階の和が合計を超える回がある。
-- 「後」はまだ 2 本しかなく、順番待ちが減るかは測りきれていない。
-
-## ライセンス
-
-MIT (`LICENSE`)
+バックグラウンドのテストの終わりは拾えない・コマンドの成否は見ない・事例の一部は時刻からの推定で待ちは下限。

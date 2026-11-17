@@ -1,36 +1,49 @@
 #!/usr/bin/env python3
-"""Loop-event logger (meetup 2026-11-17). Reads a Claude Code hook payload on stdin and
-appends at most one line to $OUT (default ~/.claude/loop-events.jsonl). Never prints, never blocks.
-Only the KIND of a command is recorded — never the command text (no secrets)."""
+"""agent-loop-meter hook. Reads a Claude Code hook payload on stdin and appends at most
+one JSON line to $OUT (default ~/.claude/loop-events.jsonl). Never prints, never blocks.
+Only the KIND and a short LABEL of a command are recorded -- never the command text.
+
+Rules come from $LOOP_METER_CONFIG, else <repo>/loop-meter.config.json, else the built-in
+defaults below. First matching rule wins."""
 import json, os, re, sys, datetime
 
 OUT = os.path.expanduser(os.environ.get("OUT", "~/.claude/loop-events.jsonl"))
+HERE = os.path.dirname(os.path.abspath(__file__))
 
-def classify_bash(cmd: str):
-    c = cmd or ""
-    if re.search(r"mkdir\s+\S*heavy\.lock", c):
-        return "lock", "heavy.lock"
-    if re.search(r"rmdir\s+\S*heavy\.lock", c):
-        return "lock_free", "heavy.lock"
-    if "full-e2e.sh" in c:
-        full = "--full" in c
-        return "test", "full-e2e" + (" full" if full else "")
-    if re.search(r"prod-smoke|test:e2e:prod", c):
-        return "test", "prod-smoke"
-    if re.search(r"live-prod", c):
-        return "test", "live-prod"
-    if re.search(r"playwright test", c):
-        return "test", "playwright"
-    if re.search(r"\bjest\b|yarn (-s )?test\b|test:changed", c):
-        return "test", "jest"
-    if re.search(r"fast-gate", c):
-        return "test", "fast-gate"
-    if re.search(r"gh pr merge", c):
-        return "merge", "pr merge"
-    if re.search(r"gh pr create", c):
-        return "pr", "pr create"
-    if re.search(r"heroku releases\b", c):
-        return "release_check", "releases"
+DEFAULT_RULES = [
+    {"match": r"\bmkdir\s+\S*\.lock\b", "kind": "lock_wait", "label": "lock"},
+    {"match": r"\brmdir\s+\S*\.lock\b", "kind": "lock_free", "label": "lock"},
+    {"match": r"\bplaywright\s+test\b", "kind": "test", "label": "playwright"},
+    {"match": r"\bvitest\b", "kind": "test", "label": "vitest"},
+    {"match": r"\bjest\b", "kind": "test", "label": "jest"},
+    {"match": r"\bpytest\b", "kind": "test", "label": "pytest"},
+    {"match": r"\bgo\s+test\b", "kind": "test", "label": "go test"},
+    {"match": r"\bcargo\s+test\b", "kind": "test", "label": "cargo test"},
+    {"match": r"\b(npm|yarn|pnpm)\s+(run\s+)?test\b", "kind": "test", "label": "npm test"},
+    {"match": r"\bdocker\s+build\b", "kind": "build", "label": "docker build"},
+    {"match": r"\bgh\s+pr\s+merge\b", "kind": "merge", "label": "pr merge"},
+    {"match": r"\bgh\s+pr\s+create\b", "kind": "pr", "label": "pr create"},
+    {"match": r"\bgit\s+push\b", "kind": "push", "label": "git push"},
+]
+
+def load_rules():
+    path = os.environ.get("LOOP_METER_CONFIG") or os.path.join(HERE, "..", "loop-meter.config.json")
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            rules = json.load(f).get("rules")
+        if isinstance(rules, list):
+            return rules
+    except Exception:
+        pass
+    return DEFAULT_RULES
+
+def classify_bash(cmd, rules):
+    for r in rules:
+        try:
+            if re.search(r["match"], cmd or ""):
+                return r.get("kind") or "other", r.get("label") or r.get("kind") or ""
+        except Exception:
+            continue
     return None, None
 
 def main():
@@ -41,7 +54,7 @@ def main():
     ev = p.get("hook_event_name", "")
     agent = p.get("agent_id") or p.get("subagent_id") or "main"
     rec = None
-    if ev in ("SubagentStart",):
+    if ev == "SubagentStart":
         rec = {"kind": "agent_start", "label": p.get("agent_type") or p.get("description") or ""}
     elif ev == "SubagentStop":
         rec = {"kind": "agent_stop", "label": p.get("agent_type") or ""}
@@ -51,15 +64,15 @@ def main():
         if tool == "Agent" and ev == "PreToolUse":
             rec = {"kind": "agent_spawn", "label": (ti.get("description") or "")[:60]}
         elif tool == "Bash":
-            k, label = classify_bash(ti.get("command", ""))
+            k, label = classify_bash(ti.get("command", ""), load_rules())
             if k:
-                phase = "start" if ev == "PreToolUse" else "end"
-                bg = bool(ti.get("run_in_background"))
-                if k == "lock":
-                    rec = {"kind": "lock_wait" if phase == "start" else "lock_got", "label": label}
+                start = ev == "PreToolUse"
+                if k == "lock_wait":  # acquire command: waiting before, holding after
+                    rec = {"kind": "lock_wait" if start else "lock_got", "label": label}
                 elif k == "test":
-                    rec = {"kind": f"test_{phase}", "label": label, "bg": bg}
-                elif phase == "end":
+                    rec = {"kind": "test_start" if start else "test_end", "label": label,
+                           "bg": bool(ti.get("run_in_background"))}
+                elif not start:
                     rec = {"kind": k, "label": label}
     if not rec:
         return

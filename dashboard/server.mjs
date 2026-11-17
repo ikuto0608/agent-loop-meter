@@ -2,7 +2,7 @@
 // Tails a JSONL event log written by hooks/loop-event.py and streams new lines to the
 // browser with Server-Sent Events. Also serves the "before" CSV for the comparison strip.
 //
-//   node dashboard/server.mjs [--log ~/.claude/loop-events.jsonl] [--port 4317]
+//   node dashboard/server.mjs [--log ~/.claude/loop-events.jsonl] [--port 4317] [--before path/to/tasks.csv]
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,7 +16,7 @@ const arg = (k, d) => {
 };
 const LOG = (arg("--log", "~/.claude/loop-events.jsonl")).replace(/^~/, os.homedir());
 const PORT = Number(arg("--port", "4317"));
-const BEFORE = path.join(here, "..", "data", "before-tasks.csv");
+const BEFORE = arg("--before", null); // optional "before" CSV; the strip is hidden without it
 
 const clients = new Set();
 let offset = 0;
@@ -67,6 +67,10 @@ http
       return;
     }
     if (req.url === "/before.csv") {
+      if (!BEFORE || !fs.existsSync(BEFORE)) {
+        res.writeHead(404);
+        return res.end();
+      }
       res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8" });
       return fs.createReadStream(BEFORE).on("error", () => res.end()).pipe(res);
     }

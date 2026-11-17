@@ -1,0 +1,17 @@
+{
+  "rules": [
+    { "match": "\\bmkdir\\s+\\S*\\.lock\\b",        "kind": "lock_wait",     "label": "lock" },
+    { "match": "\\brmdir\\s+\\S*\\.lock\\b",        "kind": "lock_free",     "label": "lock" },
+    { "match": "\\bplaywright\\s+test\\b",          "kind": "test",          "label": "playwright" },
+    { "match": "\\bvitest\\b",                      "kind": "test",          "label": "vitest" },
+    { "match": "\\bjest\\b",                        "kind": "test",          "label": "jest" },
+    { "match": "\\bpytest\\b",                      "kind": "test",          "label": "pytest" },
+    { "match": "\\bgo\\s+test\\b",                  "kind": "test",          "label": "go test" },
+    { "match": "\\bcargo\\s+test\\b",               "kind": "test",          "label": "cargo test" },
+    { "match": "\\b(npm|yarn|pnpm)\\s+(run\\s+)?test\\b", "kind": "test",    "label": "npm test" },
+    { "match": "\\bdocker\\s+build\\b",             "kind": "build",         "label": "docker build" },
+    { "match": "\\bgh\\s+pr\\s+merge\\b",           "kind": "merge",         "label": "pr merge" },
+    { "match": "\\bgh\\s+pr\\s+create\\b",          "kind": "pr",            "label": "pr create" },
+    { "match": "\\bgit\\s+push\\b",                 "kind": "push",          "label": "git push" }
+  ]
+}
