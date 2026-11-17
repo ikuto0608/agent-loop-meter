@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>74 minutes per fix</title>
+<style>
+  html, body { margin:0; height:100%; background:#160f24; overflow:hidden; }
+  canvas { display:block; width:100vw; height:100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * agent-loop-meter: "74 minutes per AI fix" animation (20 s).
+ * Data: examples/small-shop-site/before-tasks.csv (55 tasks, time order) and the
+ * stage shares in examples/small-shop-site/README.md (28 reported tasks, 2,505 min).
+ * Every frame is a pure function of time t (seconds): render(t). record.mjs uses
+ * window.__render(t) to capture frames one by one, so the video is frame exact.
+ * No external files, no flashing: everything fades or grows, nothing blinks.
+ */
+const DURATION = 20;
+const params = new URLSearchParams(location.search);
+const LANG = params.get("lang") === "en" ? "en" : "ja";
+const RECORD = params.has("record");
+
+const C = { bg:"#160f24", panel:"#221838", track:"#1a1230", line:"#3a2d5c", ink:"#f1e9ff", soft:"#a99cc8",
+  impl:"#a855f7", test:"#ff7ab6", wait:"#5b4d7a", review:"#7ee0c3", deploy:"#ffd88a", other:"#8aa2ff" };
+const SANS = 'system-ui,-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif';
+const MONO = 'ui-monospace,"SF Mono",Menlo,Consolas,monospace';
+
+const T = {
+  ja: {
+    heroPre: "1 本の AI の直しに", unit: "分", heroSub: "中央値・55 本の実測 (3 日間)",
+    head: "1 本の AI の直しに 74 分", headSub: "55 本・始まった順",
+    median: "中央値 74 分", axis: "分",
+    head2: "時間はどこへ消えたか", head2Sub: "担当の報告がある 28 本で集計・計 2,505 分",
+    impl: "実装", test: "テスト", wait: "順番待ち", review: "確認役", deploy: "反映", other: "その他",
+    rest: "その他", third: "3 分の 1",
+    close1: "実装は 3 分の 1。", close2: "残りは、テストと待ち。",
+  },
+  en: {
+    heroPre: "One AI fix takes", unit: "min", heroSub: "median of 55 measured fixes (3 days)",
+    head: "One AI fix: 74 min", headSub: "55 fixes, in start order",
+    median: "median 74 min", axis: "min",
+    head2: "Where the time went", head2Sub: "from the 28 fixes the agents reported, 2,505 min",
+    impl: "build", test: "tests", wait: "queue", review: "review", deploy: "deploy", other: "other",
+    rest: "other", third: "one third",
+    close1: "Building is one third.", close2: "The rest: tests and waiting.",
+  },
+}[LANG];
+document.documentElement.lang = LANG;
+
+// [total_min, impl, test, wait, review, deploy, other] sorted by `started`
+const TASKS = [[93,43.7,45.1,0,0,4,0],[58,40,14.3,0,0,3.8,0],[41,17.5,20.2,0,0,3.6,0],[43,20.8,18.3,0,0,3.5,0],[69,31,34.2,0,0,3.6,0],[195,157.2,33.8,0,0,3.7,0],[150,128.1,18,0,0,3.8,0],[53,28.3,21.1,0,0,3.8,0],[92,52.6,35.6,0,0,3.8,0],[38,14,20.5,0,0,3.6,0],[59,33.2,21.9,0,0,3.8,0],[146,62.3,80.4,0,0,3.7,0],[142,100.4,37.7,0,0,3.6,0],[46,16.1,26.1,0,0,4.1,0],[45,19.6,21.2,0,0,3.8,0],[104,52.5,46.7,0,0,4.4,0],[107,80.4,23.4,0,0,3.6,0],[72,42.8,25.1,0,0,4.5,0],[56,26.7,25.3,0,0,3.6,0],[91,74.8,12.6,0,0,3.8,0],[94,59.9,29.9,0,0,4.7,0],[55,32.4,18.6,0,0,3.8,0],[86,61.9,19.9,0,0,3.9,0],[74,55.6,14.4,0,0,3.7,0],[92,70.2,17.6,0,0,3.7,0],[46,26.7,14.9,0,0,4.6,0],[72,45,25,5,1,3.8,0],[82,46.3,31.7,0,0,3.8,0],[103,45,31.2,48,2,4,0],[121,37,40.2,0,50,4.1,4],[71,19,43,0,0,3.7,5.5],[32,6,17.3,0,0,3.7,4.6],[78,20,21.6,0,0,3.8,32.5],[38,45,14,0,0,3.9,10],[63,95,23.2,0,1,3.8,0],[77,44.1,29,0,0,3.5,0],[75,12,56,0,5,3.7,0],[52,17,28,0,2,3.8,1.1],[39,21,26,0,1,3.9,0],[36,15,16.8,0,0,3.6,0.6],[113,25,50,25,1,3.6,8],[51,9,21,11,3,3.6,3.1],[137,60,45,25,5,3.8,30],[78,0,30,30,5,3.9,9.2],[74,10,28,17,1,4,14.1],[55,7,19,0,2,11.5,15.2],[77,35,33,0,5,4,0],[142,85,30,15,5,3.8,3.1],[139,20,54,25,2,4.2,33.6],[126,30,40,70,5,4.1,0],[115,50,55,25,5,4.1,15],[115,13,55,20,10,4.1,13.2],[62,13.6,30.4,13.3,0,4.2,0],[51,35,32,0,1,4,0],[39,15,20,0,2,4,0]];
+const STAGES = ["impl","test","wait","review","deploy","other"];
+// Aggregate stage minutes over the 28 reported tasks (README: 33/37/13/5/5/8 %).
+const AGG_ORDER = ["impl","test","wait","other","review","deploy"];
+const AGG_MIN = { impl:828.7, test:913.7, wait:329.3, other:202.8, review:114.0, deploy:116.2 };
+const AGG_PCT = { impl:33, test:37, wait:13, other:8, review:5, deploy:5 }; // as published in the README
+const AGG_SUM = AGG_ORDER.reduce((a, k) => a + AGG_MIN[k], 0);
+const X_MAX = 200, MEDIAN = 74;
+
+// ---------- helpers ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const easeOut = p => 1 - Math.pow(1 - p, 3);
+const easeInOut = p => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+const lerp = (a, b, k) => a + (b - a) * k;
+
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+let W = 0, H = 0, S = 1, grain = null;
+
+function resize() {
+  const dpr = RECORD ? 1 : (window.devicePixelRatio || 1);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  S = Math.min(W, H) / 1080; // 1 at 1080x1350 and 1920x1080
+  grain = makeGrain();
+}
+
+// Static film grain (seeded, generated once: it never changes, so it cannot flicker).
+function makeGrain() {
+  const g = document.createElement("canvas");
+  g.width = 256; g.height = 256;
+  const gx = g.getContext("2d"), img = gx.createImageData(256, 256);
+  let s = 1234567;
+  const rnd = () => (s = (s * 1103515245 + 12345) >>> 0) / 4294967296;
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = rnd() * 255;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255;
+  }
+  gx.putImageData(img, 0, 0);
+  return ctx.createPattern(g, "repeat");
+}
+
+function font(px, weight = 700, mono = false) { return `${weight} ${Math.round(px * S)}px ${mono ? MONO : SANS}`; }
+
+function text(str, x, y, { px = 40, weight = 700, mono = false, color = C.ink, align = "left", alpha = 1, glow = 0, base = "alphabetic" } = {}) {
+  if (alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = font(px, weight, mono);
+  ctx.textAlign = align; ctx.textBaseline = base;
+  ctx.fillStyle = color;
+  if (glow) { ctx.shadowColor = "rgba(168,85,247,.75)"; ctx.shadowBlur = glow * S; }
+  ctx.fillText(str, x, y);
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, h / 2, w / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+// ---------- layout ----------
+function layout() {
+  const tall = H / W > 1.1;
+  const padX = 72 * S;
+  const cw = Math.min(W - padX * 2, 1560 * S);
+  const left = (W - cw) / 2;
+  return {
+    tall, left, cw,
+    headY: (tall ? 120 : 96) * S,
+    legendY: (tall ? 236 : 196) * S,
+    chartTop: (tall ? 300 : 248) * S,
+    chartBot: H - (tall ? 150 : 130) * S,
+    barY: H * (tall ? 0.40 : 0.43),
+    barH: (tall ? 120 : 110) * S,
+  };
+}
+
+// ---------- scenes ----------
+function background() {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(W / 2, -H * 0.1, 0, W / 2, -H * 0.1, Math.max(W, H) * 0.85);
+  g.addColorStop(0, "#2e1d52"); g.addColorStop(1, "rgba(22,15,36,0)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+
+function overlay() {
+  // grain
+  ctx.save(); ctx.globalAlpha = 0.06; ctx.globalCompositeOperation = "screen";
+  ctx.fillStyle = grain; ctx.fillRect(0, 0, W, H); ctx.restore();
+  // scanlines
+  ctx.save(); ctx.fillStyle = "rgba(0,0,0,.16)";
+  for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+  ctx.restore();
+  // vignette
+  const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+  v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,.45)");
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+// 0-3 s: big count-up
+function hero(t, L) {
+  const out = 1 - prog(t, 2.7, 3.3);
+  const a = Math.min(prog(t, 0, 0.5), out);
+  if (a <= 0) return;
+  const cy = H * 0.5;
+  const n = Math.round(74 * easeOut(prog(t, 0.4, 2.3)));
+  const lift = (1 - out) * -30 * S;
+  text(T.heroPre, W / 2, cy - 190 * S + lift, { px: 64, align: "center", alpha: a });
+  ctx.save(); ctx.font = font(300, 800, true); const nw = ctx.measureText("74").width; ctx.restore();
+  ctx.save(); ctx.font = font(84, 700); const uw = ctx.measureText(T.unit).width; ctx.restore();
+  const gap = 24 * S, total = nw + gap + uw, x0 = W / 2 - total / 2;
+  text(String(n), x0 + nw, cy + 90 * S + lift, { px: 300, weight: 800, mono: true, color: C.impl, align: "right", alpha: a, glow: 40 });
+  text(T.unit, x0 + nw + gap, cy + 90 * S + lift, { px: 84, alpha: a });
+  text(T.heroSub, W / 2, cy + 190 * S + lift, { px: 38, weight: 500, color: C.soft, align: "center", alpha: a * prog(t, 1.0, 1.8) });
+}
+
+function header(t, L) {
+  const a1 = Math.min(prog(t, 3.0, 3.6), 1 - prog(t, 10.8, 11.3));
+  const a2 = Math.min(prog(t, 11.4, 11.9), 1 - prog(t, 15.8, 16.4));
+  const x = L.left;
+  if (a1 > 0) {
+    text(T.head, x, L.headY, { px: 60, alpha: a1 });
+    text(T.headSub, x, L.headY + 56 * S, { px: 32, weight: 500, color: C.soft, alpha: a1 });
+    // counter
+    const done = TASKS.filter((_, i) => t >= rowStart(i)).length;
+    text(`${String(done).padStart(2, " ")}/55`, x + L.cw, L.headY, { px: 44, mono: true, color: C.soft, align: "right", alpha: a1 });
+    legend(x, L.legendY, a1 * prog(t, 3.2, 3.8));
+  }
+  if (a2 > 0) {
+    text(T.head2, x, L.headY, { px: 60, alpha: a2 });
+    text(T.head2Sub, x, L.headY + 56 * S, { px: 32, weight: 500, color: C.soft, alpha: a2 });
+  }
+}
+
+function legend(x, y, a) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a;
+  ctx.font = font(30, 600);
+  let cx = x;
+  for (const k of STAGES) {
+    ctx.fillStyle = C[k];
+    ctx.beginPath(); ctx.arc(cx + 11 * S, y - 10 * S, 11 * S, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.soft; ctx.textBaseline = "alphabetic";
+    ctx.fillText(T[k], cx + 30 * S, y);
+    cx += 30 * S + ctx.measureText(T[k]).width + 30 * S;
+  }
+  ctx.restore();
+}
+
+const rowStart = i => 3.4 + i * 0.09;      // last row starts at 8.26 s
+const ROW_GROW = 1.3;                        // and finishes at ~9.6 s
+
+// 3-16 s: the 55 bars, then the fold into one bar
+function bars(t, L) {
+  if (t < 3.3) return;
+  const n = TASKS.length;
+  const rowH = (L.chartBot - L.chartTop) / n;
+  const bh = Math.max(4 * S, rowH * 0.66);
+  const px = L.cw / X_MAX;
+  const gridA = Math.min(prog(t, 3.3, 4.0), 1 - prog(t, 10.9, 11.5));
+
+  // axis + grid
+  if (gridA > 0) {
+    ctx.save(); ctx.globalAlpha = gridA;
+    for (const m of [0, 60, 120, 180]) {
+      const gx = L.left + m * px;
+      ctx.strokeStyle = C.line; ctx.lineWidth = 1.5 * S;
+      ctx.beginPath(); ctx.moveTo(gx, L.chartTop - 6 * S); ctx.lineTo(gx, L.chartBot); ctx.stroke();
+      text(m === 180 ? `${m} ${T.axis}` : String(m), gx, L.chartBot + 52 * S, { px: 32, weight: 500, mono: true, color: C.soft, align: m === 0 ? "left" : "center" });
+    }
+    ctx.restore();
+  }
+
+  // fold: 11.0 -> 12.8 s
+  const aggX = {}; { let acc = 0; for (const k of AGG_ORDER) { aggX[k] = [acc / AGG_SUM, AGG_MIN[k] / AGG_SUM]; acc += AGG_MIN[k]; } }
+
+  for (let i = 0; i < n; i++) {
+    const [tot, ...seg] = TASKS[i];
+    const g = easeOut(prog(t, rowStart(i), rowStart(i) + ROW_GROW));
+    if (g <= 0) continue;
+    const k = easeInOut(prog(t, 11.0 + i * 0.008, 12.4 + i * 0.008));
+    const y0 = L.chartTop + i * rowH + (rowH - bh) / 2;
+    const y = lerp(y0, L.barY, k), h = lerp(bh, L.barH, k);
+    const segSum = seg.reduce((a, b) => a + b, 0) || 1;
+    const fullW = tot * px * g;
+    // bar body (clip so the growing end is rounded)
+    ctx.save();
+    roundRect(L.left, y, lerp(fullW, L.cw, k), h, lerp(bh / 2, 18 * S, k));
+    ctx.clip();
+    let acc = 0;
+    // own segments in stage order, morphing into the aggregate order and widths
+    const own = {}; STAGES.forEach((s, j) => { own[s] = [acc / segSum, seg[j] / segSum]; acc += seg[j]; });
+    for (const s of STAGES) {
+      const sx = lerp(own[s][0] * fullW, aggX[s][0] * L.cw, k);
+      const sw = lerp(own[s][1] * fullW, aggX[s][1] * L.cw, k);
+      if (sw <= 0) continue;
+      ctx.fillStyle = C[s];
+      ctx.fillRect(L.left + sx, y, sw + 0.5, h);
+    }
+    ctx.restore();
+  }
+
+  // glow under the folded bar
+  const ga = prog(t, 12.2, 13.0);
+  if (ga > 0) {
+    ctx.save(); ctx.globalAlpha = ga * 0.9;
+    ctx.shadowColor = "rgba(168,85,247,.7)"; ctx.shadowBlur = 50 * S;
+    ctx.strokeStyle = "rgba(241,233,255,.25)"; ctx.lineWidth = 2 * S;
+    roundRect(L.left, L.barY, L.cw, L.barH, 18 * S); ctx.stroke();
+    ctx.restore();
+  }
+
+  // median line: draws down 9.5 -> 10.3 s, label fades in, all fades at the fold
+  const ma = 1 - prog(t, 10.9, 11.4);
+  const md = easeOut(prog(t, 9.5, 10.3));
+  if (md > 0 && ma > 0) {
+    const mx = L.left + MEDIAN * px;
+    const top = L.chartTop - 14 * S;
+    ctx.save(); ctx.globalAlpha = ma;
+    ctx.strokeStyle = C.ink; ctx.lineWidth = 4 * S; ctx.setLineDash([12 * S, 10 * S]);
+    ctx.shadowColor = "rgba(168,85,247,.9)"; ctx.shadowBlur = 18 * S;
+    ctx.beginPath(); ctx.moveTo(mx, top); ctx.lineTo(mx, lerp(top, L.chartBot + 8 * S, md)); ctx.stroke();
+    ctx.restore();
+    // label with a dark pill so it reads over the bars
+    const la = ma * prog(t, 9.9, 10.5);
+    if (la > 0) {
+      ctx.save(); ctx.globalAlpha = la; ctx.font = font(44, 800);
+      const tw = ctx.measureText(T.median).width;
+      const ly = L.chartTop + (L.chartBot - L.chartTop) * 0.30;
+      ctx.fillStyle = "rgba(22,15,36,.88)"; roundRect(mx + 18 * S, ly - 48 * S, tw + 36 * S, 68 * S, 14 * S); ctx.fill();
+      ctx.strokeStyle = C.impl; ctx.lineWidth = 2 * S; ctx.stroke();
+      ctx.restore();
+      text(T.median, mx + 36 * S, ly + 2 * S, { px: 44, weight: 800, alpha: la, glow: 16 });
+    }
+  }
+}
+
+// 12.6-16 s: labels on the folded bar
+function breakdownLabels(t, L) {
+  const fadeOut = 1 - prog(t, 15.8, 16.4) * 0.55; // stays, slightly dimmed, under the closing line
+  const b = L.barY, h = L.barH, x0 = L.left, w = L.cw;
+  let acc = 0; const pos = {};
+  for (const k of AGG_ORDER) { pos[k] = [x0 + acc / AGG_SUM * w, AGG_MIN[k] / AGG_SUM * w]; acc += AGG_MIN[k]; }
+  const items = [
+    { k: "impl", at: 12.7, label: T.impl, pct: AGG_PCT.impl, cx: pos.impl[0] + pos.impl[1] / 2, color: C.impl },
+    { k: "test", at: 13.1, label: T.test, pct: AGG_PCT.test, cx: pos.test[0] + pos.test[1] / 2, color: C.test },
+    { k: "wait", at: 13.5, label: T.wait, pct: AGG_PCT.wait, cx: pos.wait[0] + pos.wait[1] / 2, color: "#c9bbe8" },
+  ];
+  for (const it of items) {
+    const a = prog(t, it.at, it.at + 0.5) * fadeOut;
+    if (a <= 0) continue;
+    const rise = (1 - easeOut(prog(t, it.at, it.at + 0.5))) * 16 * S;
+    const narrow = it.k === "wait";
+    text(`${it.pct}%`, it.cx, b - 30 * S + rise, { px: narrow ? 56 : 84, weight: 800, mono: true, color: it.color, align: "center", alpha: a, glow: it.k === "impl" ? 24 : 0 });
+    text(it.label, it.cx, b - (narrow ? 94 : 124) * S + rise, { px: narrow ? 32 : 40, weight: 700, color: C.ink, align: "center", alpha: a });
+  }
+  // other + review + deploy: one bracket below the bar
+  const ra = prog(t, 13.9, 14.4) * fadeOut;
+  if (ra > 0) {
+    const rx = pos.other[0], rw = pos.other[1] + pos.review[1] + pos.deploy[1];
+    const restPct = AGG_PCT.other + AGG_PCT.review + AGG_PCT.deploy;
+    ctx.save(); ctx.globalAlpha = ra; ctx.strokeStyle = C.soft; ctx.lineWidth = 3 * S;
+    const by = b + h + 18 * S;
+    ctx.beginPath(); ctx.moveTo(rx + 4 * S, by); ctx.lineTo(rx + 4 * S, by + 14 * S); ctx.lineTo(rx + rw - 4 * S, by + 14 * S); ctx.lineTo(rx + rw - 4 * S, by); ctx.stroke();
+    ctx.restore();
+    text(`${T.rest} ${restPct}%`, rx + rw, b + h + 76 * S, { px: 34, weight: 700, color: C.soft, align: "right", alpha: ra });
+    // small legend chips for the three
+    ctx.save(); ctx.globalAlpha = ra; ctx.font = font(26, 600);
+    let cx = rx + rw;
+    const chips = [["deploy", AGG_PCT.deploy], ["review", AGG_PCT.review], ["other", AGG_PCT.other]];
+    for (const [k, p] of chips) {
+      const s = `${T[k]} ${p}%`; const sw = ctx.measureText(s).width;
+      cx -= sw; ctx.fillStyle = C.soft; ctx.textAlign = "left"; ctx.fillText(s, cx, b + h + 120 * S);
+      cx -= 30 * S; ctx.fillStyle = C[k]; ctx.beginPath(); ctx.arc(cx + 11 * S, b + h + 111 * S, 9 * S, 0, Math.PI * 2); ctx.fill();
+      cx -= 24 * S;
+    }
+    ctx.restore();
+  }
+  // "one third" bracket under the build segment
+  const ta = prog(t, 14.4, 15.0) * fadeOut;
+  if (ta > 0) {
+    const [ix, iw] = pos.impl, by = b + h + 18 * S;
+    ctx.save(); ctx.globalAlpha = ta; ctx.strokeStyle = C.impl; ctx.lineWidth = 4 * S;
+    ctx.shadowColor = "rgba(168,85,247,.8)"; ctx.shadowBlur = 14 * S;
+    ctx.beginPath(); ctx.moveTo(ix + 4 * S, by); ctx.lineTo(ix + 4 * S, by + 16 * S); ctx.lineTo(ix + iw - 4 * S, by + 16 * S); ctx.lineTo(ix + iw - 4 * S, by); ctx.stroke();
+    ctx.restore();
+    text(T.third, ix + iw / 2, b + h + 92 * S, { px: 52, weight: 800, color: C.ink, align: "center", alpha: ta, glow: 18 });
+  }
+}
+
+// 16-20 s: closing line + repo
+function closing(t, L) {
+  const a1 = prog(t, 16.2, 16.9), a2 = prog(t, 16.9, 17.6), a3 = prog(t, 17.9, 18.6);
+  const y = L.tall ? H * 0.80 : H * 0.78;
+  const r1 = (1 - easeOut(a1)) * 18 * S, r2 = (1 - easeOut(a2)) * 18 * S;
+  const big = L.tall ? 76 : 80;
+  // a dark band so the line reads over whatever is behind
+  const ba = Math.max(a1, a2);
+  if (ba > 0) {
+    ctx.save(); ctx.globalAlpha = ba * 0.75; ctx.fillStyle = C.bg;
+    ctx.fillRect(0, y - (L.tall ? 230 : 125) * S, W, (L.tall ? 370 : 255) * S); ctx.restore();
+  }
+  if (L.tall) {
+    text(T.close1, W / 2, y - 70 * S + r1, { px: big, weight: 800, color: C.impl, align: "center", alpha: a1, glow: 30 });
+    text(T.close2, W / 2, y + 40 * S + r2, { px: big, weight: 800, align: "center", alpha: a2 });
+  } else {
+    text(T.close1, W / 2, y - 40 * S + r1, { px: big, weight: 800, color: C.impl, align: "center", alpha: a1, glow: 30 });
+    text(T.close2, W / 2, y + 60 * S + r2, { px: big, weight: 800, align: "center", alpha: a2 });
+  }
+  text("github.com/ikuto0608/agent-loop-meter", W / 2, H - (L.tall ? 70 : 52) * S, { px: 30, weight: 500, mono: true, color: C.soft, align: "center", alpha: a3 });
+}
+
+function render(t) {
+  t = clamp(t, 0, DURATION);
+  const L = layout();
+  background();
+  hero(t, L);
+  header(t, L);
+  bars(t, L);
+  breakdownLabels(t, L);
+  closing(t, L);
+  overlay();
+}
+
+window.__render = render;
+window.__duration = DURATION;
+resize();
+window.addEventListener("resize", () => { resize(); });
+
+if (RECORD) {
+  render(0);
+} else {
+  // Live playback: loop with a 1.5 s hold on the last frame.
+  const start = performance.now();
+  const loop = now => {
+    const t = ((now - start) / 1000) % (DURATION + 1.5);
+    render(t);
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
