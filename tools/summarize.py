@@ -16,7 +16,9 @@ An outside script can write its own lock events ("src":"script", "agent":"ext" u
 They are handed to the agent that has a test with the same label open at that time (see attach_ext), so the
 script's queueing counts as wait and is taken out of that test (wait > test). A bash test run in the background
 keeps counting as test after the lock is got.
-Time counts only between agent_start and agent_stop (a resumed agent adds each stretch).
+Time counts only between agent_start and agent_stop (a resumed agent adds each stretch). The gap between a stop
+and the same agent's next event is test when a background test (bg=true) was still open at the stop (test_end with
+bg and nothing after it), else idle: counted nowhere. --include-main adds one row for the main agent.
 """
 import argparse, csv, datetime, json, os, statistics, sys
 
@@ -105,9 +107,10 @@ def measure(events, desc=None):
     category = ""
     stopped = False
     script_wait = False
+    gap = False   # stopped while a background test was still open: the time until the agent's next event is test
     for e in events:
         t = e["_t"]
-        if active and last is not None:
+        if (active or gap) and last is not None:
             dt = (t - last).total_seconds() / 60
             if wait: b["wait_min"] += dt
             elif test:
@@ -120,14 +123,18 @@ def measure(events, desc=None):
             else: b["impl_min"] += dt
         last = t
         k = e["kind"]
-        if bg and k not in ("test_start", "test_end") and e.get("src") != "script":
+        script = e.get("src") == "script"
+        if k == "agent_stop" and bg: gap = True
+        elif gap and not script: gap = False
+        if bg and k not in ("test_start", "test_end") and not script and not gap:
             test = bg = False
         if k in ("agent_spawn", "agent_start"):
             if k == "agent_start" or not category: category = e.get("label") or category
             if k == "agent_start": active = True
         elif k == "agent_stop":
             active = False; stopped = True
-            wait = test = review = deploy = bg = False
+            review = deploy = False
+            if not gap: wait = test = bg = False
         elif k == "lock_wait": wait = True; script_wait = e.get("src") == "script"
         elif k in ("lock_got", "lock_free"): wait = False
         elif k == "test_start": test = True; label = e.get("label") or ""
@@ -151,9 +158,18 @@ def measure(events, desc=None):
     return row
 
 
-def summarize(evs, since=None, include_open=False):
+MAIN_NAME = "control tower (main)"
+
+
+def summarize(evs, since=None, include_open=False, include_main=False):
     by, descs, queue = {}, {}, []
-    for e in attach_ext(evs):
+    evs = attach_ext(evs)
+    mains = [e for e in evs if e.get("agent") == "main"]
+    if include_main and mains:  # the main agent has no agent_start/stop: it runs from its first to its last event
+        t0, t1 = mains[0], mains[-1]
+        by["main"] = [{**t0, "kind": "agent_start", "label": MAIN_NAME}] + mains + [{**t1, "kind": "agent_stop", "label": ""}]
+        descs["main"] = MAIN_NAME
+    for e in evs:
         # agent_spawn (PreToolUse Agent) queues its description; the next new agent id takes the oldest one.
         if e.get("kind") == "agent_spawn" and e.get("label"): queue.append(e["label"])
         if e.get("agent") in (None, *NON_AGENTS): continue
@@ -189,10 +205,11 @@ def main(argv=None):
     ap.add_argument("--log", default=os.environ.get("OUT", "~/.claude/loop-events.jsonl"))
     ap.add_argument("--since", help="only loops started on or after this date (YYYY-MM-DD)")
     ap.add_argument("--out", help="CSV path (default: stdout is the summary only)")
+    ap.add_argument("--include-main", action="store_true", help='add one row for the main agent ("control tower")')
     ap.add_argument("--include-open", action="store_true", help="also count agents with no agent_stop")
     a = ap.parse_args(argv)
     since = datetime.date.fromisoformat(a.since) if a.since else None
-    rows, so, sn = summarize(load(a.log), since, a.include_open)
+    rows, so, sn = summarize(load(a.log), since, a.include_open, a.include_main)
     if a.out:
         with open(a.out, "w", encoding="utf-8", newline="") as f: write_csv(rows, f)
         print(f"wrote {a.out}")

@@ -35,6 +35,11 @@
   .lane .name { font-size:13px; color:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .bar { position:relative; height:18px; background:var(--track); border-radius:9px; overflow:hidden; box-shadow:inset 0 1px 3px rgba(0,0,0,.5); }
   .seg { position:absolute; top:0; bottom:0; }
+  .seg.gap { background:repeating-linear-gradient(135deg,rgba(255,122,182,.55) 0 4px,rgba(255,122,182,.18) 4px 8px) !important; }
+  .seg.mainidle { background:#3d3160 !important; }
+  .mark { position:absolute; top:0; width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--ink); transform:translateX(-4px); }
+  .lane.faint { opacity:.45; } .lane .dot { position:absolute; top:5px; width:8px; height:8px; border-radius:50%; background:var(--soft); transform:translateX(-4px); }
+  .lane.tower .name { color:var(--ink); }
   .lane .min { font:13px var(--mono); font-variant-numeric:tabular-nums; text-align:right; }
   #before .lane { grid-template-columns:150px 1fr 60px; margin:3px 0; }
   #before .bar { height:12px; border-radius:6px; }
@@ -94,7 +99,7 @@
   <section>
     <h2 data-i="lanesH"></h2>
     <p class="how" data-i="lanes_how"></p>
-    <div class="legend"><span><i style="background:var(--work)"></i><span data-i="work"></span></span><span><i style="background:var(--test)"></i><span data-i="test"></span></span><span><i style="background:var(--wait)"></i><span data-i="wait"></span></span><span><i style="background:var(--review)"></i><span data-i="review"></span></span><span><i style="background:var(--deploy)"></i><span data-i="deploy"></span></span></div>
+    <div class="legend"><span><i style="background:var(--work)"></i><span data-i="work"></span></span><span><i style="background:var(--test)"></i><span data-i="test"></span></span><span><i style="background:var(--wait)"></i><span data-i="wait"></span></span><span><i style="background:var(--review)"></i><span data-i="review"></span></span><span><i style="background:var(--deploy)"></i><span data-i="deploy"></span></span><span><i style="background:repeating-linear-gradient(135deg,rgba(255,122,182,.9) 0 3px,rgba(255,122,182,.3) 3px 6px)"></i><span data-i="gapL"></span></span></div>
     <div id="lanes"><p class="empty" data-i="empty"></p></div>
     <div class="axis" id="axis" hidden><div></div><div class="ticks" id="ticks"></div><div class="axis-cap" data-i="min"></div></div>
   </section>
@@ -124,7 +129,7 @@ const T = {
     beforeHow:"One row per past task. Bar length is minutes; color is the stage. The top bar adds all of them up.",
     active:"active agents", lock:"lock holder", done:"finished", merges:"merges", liveH:"Now: agents running", lanesH:"Today: one row per agent (left = earlier)",
     kindsH:"Events by kind", work:"working", test:"testing", wait:"waiting for lock", review:"review", deploy:"deploy", waiting:"Waiting for events...", none:"No agent is running.",
-    state:{work:"working",test:"testing",wait:"waiting for lock",review:"review",deploy:"deploy",done:"done"}, free:"free",
+    state:{work:"working",test:"testing",gap:"testing (background)",wait:"waiting for lock",review:"review",deploy:"deploy",done:"done"}, free:"free", gapL:"testing (background)", tower:"control tower (main)", noStart:"(start not captured)", spawn:"agent handed out",
     beforeH:(n)=>`Before: where the last ${n} tasks spent their time`, tasks:"tasks",
     stages:{impl_min:"implementation",test_min:"tests",wait_min:"queueing",review_min:"review",deploy_min:"deploy wait",other_min:"other"},
     note:(m,x)=>`median ${m} min, longest ${x} min.`, other:"other" },
@@ -136,7 +141,7 @@ const T = {
     beforeHow:"過去の 1 本ごとに 1 行。長さが分・色が段階。いちばん上の帯は全部を足した内訳です。",
     active:"動いている担当", lock:"鍵を持つ担当", done:"終わった担当", merges:"マージ", liveH:"いま動いている担当", lanesH:"今日の担当の帯 (横軸 = 時刻)",
     kindsH:"出来事の種類", work:"実装", test:"テスト", wait:"鍵の順番待ち", review:"確認役", deploy:"反映", waiting:"記録を待っています…", none:"いま動いている担当はいません",
-    state:{work:"実装",test:"テスト中",wait:"順番待ち",review:"確認中",deploy:"反映中",done:"終わり"}, free:"空き",
+    state:{work:"実装",test:"テスト中",gap:"テスト中 (裏)",wait:"順番待ち",review:"確認中",deploy:"反映中",done:"終わり"}, free:"空き", gapL:"テスト中 (裏)", tower:"管制塔 (main)", noStart:"(開始を取れず)", spawn:"担当を出した",
     beforeH:(n)=>`前の ${n} 本: 時間はどこに使われたか`, tasks:"本",
     stages:{impl_min:"実装",test_min:"テスト",wait_min:"順番待ち",review_min:"確認役",deploy_min:"反映待ち",other_min:"その他"},
     note:(m,x)=>`中央値 ${m} 分・最長 ${x} 分。`, other:"その他" },
@@ -162,7 +167,7 @@ const now = () => Date.now();
 const fmt = (ms) => { const s = Math.max(0, Math.round(ms/1000)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
 
 function agentOf(id) {
-  if (!agents.has(id)) agents.set(id, { label: id.slice(0, 4), desc: spawnQueue.shift() || "", type: "", start: null, end: null, state: "work", since: null, segs: [] });
+  if (!agents.has(id)) agents.set(id, { label: id.slice(0, 4), desc: spawnQueue.shift() || "", type: "", start: null, end: null, state: "work", since: null, segs: [], noStart: true, bgPending: false });
   return agents.get(id);
 }
 function setState(a, state, ts) {
@@ -185,6 +190,17 @@ function ownExt(e) {
   }
   return (e.run != null && extRuns.get(e.run)) || extLast;
 }
+// The main agent ("control tower"): one lane, no card, not counted. Pink while a test of its own runs
+// (a background one until its next event), faint otherwise = waiting for the agents. A mark per agent_spawn.
+const main = { start: null, state: "idle", since: null, segs: [], marks: [], bgPending: false };
+function onMain(e, ts) {
+  if (main.start == null) { main.start = ts; main.since = ts; }
+  const isTest = e.kind === "test_start" || e.kind === "test_end";
+  if (main.bgPending && !isTest) { setState(main, "idle", ts); main.bgPending = false; }
+  if (e.kind === "agent_spawn") main.marks.push({ at: ts, label: e.label || "" });
+  if (e.kind === "test_start") setState(main, "test", ts);
+  if (e.kind === "test_end") { if (e.bg) main.bgPending = true; else setState(main, "idle", ts); }
+}
 function onEvent(e) {
   const ts = Date.parse(e.t);
   if (!(ts > 0)) return;
@@ -204,21 +220,32 @@ function onEvent(e) {
   kindCounts.set(e.kind, (kindCounts.get(e.kind) || 0) + 1);
   if (e.kind === "merge") merges++;
   if (e.kind === "agent_spawn" && e.label) spawnQueue.push(e.label);
+  if (e.agent === "main") { onMain(e, ts); render(); return; }
   if (NON_AGENTS.includes(e.agent)) { render(); return; }
   const a = agentOf(e.agent);
   if (a.start == null) { a.start = ts; a.since = ts; }
+  if (e.kind === "agent_start") {
+    a.noStart = false;
+    if (a.end != null) { a.end = null; setState(a, "work", ts); } // resumed after a stop
+  }
   if (e.kind === "agent_start" && e.label) a.type = e.label;
+  // a stopped agent with a background test open (gap) is back; a background test ends at the agent's next event
+  if (a.state === "gap") { setState(a, "work", ts); a.bgPending = false; }
+  else if (a.bgPending && !/^test_(start|end)$/.test(e.kind) && e.kind !== "agent_stop") { setState(a, "work", ts); a.bgPending = false; }
   a.label = a.desc || (a.type ? a.type + " · " + e.agent.slice(0, 4) : e.agent.slice(0, 4));
   if (e.kind === "lock_wait") setState(a, "wait", ts);
   if (e.kind === "lock_got") { setState(a, "work", ts); lockHolder = a; }
   if (e.kind === "lock_free") { setState(a, "work", ts); if (lockHolder === a) lockHolder = null; }
   if (e.kind === "test_start") { setState(a, "test", ts); a.testLabel = e.label || ""; a.testSince = ts; a.extClaimed = false; }
-  if (e.kind === "test_end" && !e.bg) { setState(a, "work", ts); a.testLabel = null; }
+  if (e.kind === "test_end") { if (e.bg) a.bgPending = true; else { setState(a, "work", ts); a.testLabel = null; a.bgPending = false; } }
   if (e.kind === "review_start") setState(a, "review", ts);
   if (e.kind === "review_end") setState(a, "work", ts);
   if (e.kind === "deploy_start") setState(a, "deploy", ts);
   if (e.kind === "deploy_end") setState(a, "work", ts);
-  if (e.kind === "agent_stop") { setState(a, "done", ts); a.end = ts; if (lockHolder === a) lockHolder = null; }
+  if (e.kind === "agent_stop") {
+    if (a.bgPending) setState(a, "gap", ts); // stopped, but its background test is still running: not finished
+    else { setState(a, "done", ts); a.end = ts; if (lockHolder === a) lockHolder = null; }
+  }
   render();
 }
 function drawTicks(t0, span) {
@@ -231,18 +258,18 @@ function drawTicks(t0, span) {
     k.style.left = ((x - t0) / span * 100) + "%"; k.textContent = hm(x); box.appendChild(k);
   }
 }
-const color = { work: "var(--work)", test: "var(--test)", wait: "var(--wait)", review: "var(--review)", deploy: "var(--deploy)" };
+const color = { gap: "var(--test)", work: "var(--work)", test: "var(--test)", wait: "var(--wait)", review: "var(--review)", deploy: "var(--deploy)" };
 function render() {
-  const live = [...agents.values()].filter(a => a.end == null);
+  const live = [...agents.values()].filter(a => a.end == null && !a.noStart);
   document.getElementById("nActive").textContent = live.length;
-  document.getElementById("nDone").textContent = [...agents.values()].filter(a => a.end != null).length;
+  document.getElementById("nDone").textContent = [...agents.values()].filter(a => a.end != null && !a.noStart).length;
   document.getElementById("nMerge").textContent = merges;
   document.getElementById("lock").textContent = lockHolder ? lockHolder.label.slice(0, 18) : t.free;
   const cards = document.getElementById("cards");
   cards.innerHTML = live.length ? "" : `<p class="empty">${t.none}</p>`;
   for (const a of live) {
     const d = document.createElement("div");
-    d.className = "card " + (a.state === "test" ? "testing" : a.state === "wait" ? "waiting" : "");
+    d.className = "card " + (a.state === "test" || a.state === "gap" ? "testing" : a.state === "wait" ? "waiting" : "");
     d.innerHTML = '<dl><dt>' + t.f_name + '</dt><dd class="who"></dd><dt>' + t.f_stage + '</dt><dd class="what"></dd><dt>' + t.f_elapsed + '</dt><dd class="t"></dd></dl>';
     d.querySelector(".who").textContent = a.label;
     d.querySelector(".what").textContent = t.state[a.state];
@@ -266,13 +293,39 @@ function render() {
   const t0 = Math.min(...all.map(a => a.start)), t1 = Math.max(now(), ...all.map(a => a.end || 0));
   const span = Math.max(60000, t1 - t0);
   drawTicks(t0, span);
+  if (main.start != null) {
+    const row = document.createElement("div"); row.className = "lane tower";
+    row.innerHTML = '<div class="name"></div><div class="bar"></div><div class="min"></div>';
+    row.querySelector(".name").textContent = t.tower;
+    const bar = row.querySelector(".bar");
+    const ms = [...main.segs, { kind: main.state, from: main.since, to: now() }];
+    for (const s of ms) {
+      const from = Math.max(s.from, t0); if (s.to <= from) continue;
+      const seg = document.createElement("div"); seg.className = "seg" + (s.kind === "test" ? "" : " mainidle");
+      seg.title = `${s.kind === "test" ? t.state.test : t.tower}: ${Math.max(1, Math.round((s.to - from) / 60000))} ${t.min}`;
+      seg.style.left = ((from - t0) / span * 100) + "%"; seg.style.width = Math.max(0.2, (s.to - from) / span * 100) + "%";
+      if (s.kind === "test") seg.style.background = "var(--test)";
+      bar.appendChild(seg);
+    }
+    for (const m of main.marks) {
+      if (m.at < t0) continue;
+      const mk = document.createElement("div"); mk.className = "mark"; mk.title = t.spawn + (m.label ? ": " + m.label : "");
+      mk.style.left = ((m.at - t0) / span * 100) + "%"; bar.appendChild(mk);
+    }
+    lanes.appendChild(row);
+  }
   for (const a of all) {
     const row = document.createElement("div"); row.className = "lane";
     const segs = [...a.segs]; if (a.end == null) segs.push({ kind: a.state, from: a.since, to: now() });
     row.innerHTML = '<div class="name"></div><div class="bar"></div><div class="min"></div>';
-    row.querySelector(".name").textContent = a.label;
+    row.querySelector(".name").textContent = a.noStart ? a.label + " " + t.noStart : a.label;
     const minEl = row.querySelector(".min");
-    minEl.textContent = `${Math.round(((a.end || now()) - a.start) / 60000)} ${t.min}`;
+    minEl.textContent = `${a.noStart ? 0 : Math.round(((a.end || now()) - a.start) / 60000)} ${t.min}`;
+    if (a.noStart) {
+      row.classList.add("faint");
+      const dot = document.createElement("div"); dot.className = "dot"; dot.style.left = ((a.start - t0) / span * 100) + "%";
+      row.querySelector(".bar").appendChild(dot); lanes.appendChild(row); continue;
+    }
     minEl.title = a.end == null ? t.elapsedLive : t.elapsedDone;
     const bar = row.querySelector(".bar");
     for (const s of segs) {
@@ -282,6 +335,7 @@ function render() {
       seg.style.left = ((s.from - t0) / span * 100) + "%";
       seg.style.width = Math.max(0.2, (s.to - s.from) / span * 100) + "%";
       seg.style.background = color[s.kind] || color.work;
+      if (s.kind === "gap") seg.classList.add("gap");
       bar.appendChild(seg);
     }
     lanes.appendChild(row);

@@ -118,6 +118,8 @@ One loop = `agent_start` -> `agent_stop` (agents never stopped are left out unle
 `lock_wait..lock_got` = wait; `test_start..test_end` = test (a background test lasts until the agent's next event; `full_e2e_min` = tests whose label contains `e2e`/`full`);
 `review_start..review_end` = review; `deploy_start..deploy_end` = deploy; everything else = impl.
 After the first `merge`, the time up to the last `release` / `release_check` / `deploy_end` is deploy and the rest is other; with no such event nothing after the merge is called deploy.
+When an agent stops while a background test (`bg: true`, never ended) is still open, the time until that agent's next event counts as test (drawn as a hatched pink band, "testing (background)"). A gap with no such test is **idle**: no band, counted nowhere, not even in "other".
+The main agent (the session you talk to) has no start/stop and is **not** summed; the dashboard shows it as a "control tower (main)" lane (pink while its own test runs, faint otherwise = waiting for agents, a small mark per agent handed out) and `--include-main` adds it as one row. An id whose `agent_start` was never captured stays as a faint dot labelled "(start not captured)" and gets no card.
 Prints loops, median and stage shares. Test: `python3 -m unittest tools/test_summarize.py`.
 
 Rule options: `"phase": "span"` writes `<kind>_start` before and `<kind>_end` after the command (default for `test`; shipped for `review` and `deploy`); `"point"` (default for other kinds) writes one line after it.

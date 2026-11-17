@@ -57,6 +57,32 @@ class Ext(unittest.TestCase):
         r = self.rows(X, X2)
         self.assertEqual((r["X"]["wait_min"], r["Z"]["wait_min"]), (10, 10))
 
+# G: bg test open at the stop -> the 20 min until the next start are test. H: no bg test -> the gap is idle.
+G = [ev("16:00","G","agent_start","w"), ev("16:00","G","test_start","street-e2e",bg=True), ev("16:00","G","test_end","street-e2e",bg=True),
+     ev("16:05","G","agent_stop"), ev("16:25","G","agent_start","w"), ev("16:30","G","agent_stop")]
+H = [ev("16:00","H","agent_start","w"), ev("16:05","H","agent_stop"), ev("16:25","H","agent_start","w"), ev("16:30","H","agent_stop")]
+# M: main runs a test 17:00..17:10 (non-bg) and a push at 17:20.
+M2 = [ev("17:00","main","test_start","jest"), ev("17:10","main","test_end","jest"), ev("17:20","main","merge","pr merge")]
+
+class Gap(unittest.TestCase):
+    def rows(self, *groups, **kw):
+        evs = sorted(sum(groups, []), key=lambda e: e["t"])
+        rows, _, _ = S.summarize([dict(e, _t=S.datetime.datetime.fromisoformat(e["t"]), _i=i) for i, e in enumerate(evs)], **kw)
+        return {r["task"]: r for r in rows}
+
+    def test_background_gap_is_test(self):
+        g = self.rows(G)["G"]
+        self.assertEqual((g["test_min"], g["impl_min"], g["total_min"]), (25, 5, 30))
+
+    def test_gap_without_background_test_is_idle(self):
+        h = self.rows(H)["H"]
+        self.assertEqual((h["total_min"], h["test_min"], h["other_min"]), (10, 0, 0))
+
+    def test_main_row_only_with_option(self):
+        self.assertNotIn("main", self.rows(M2))
+        m = self.rows(M2, include_main=True)["main"]
+        self.assertEqual((m["category"], m["test_min"], m["total_min"]), ("control tower (main)", 10, 20))
+
 class T(unittest.TestCase):
     def rows(self, **kw):
         evs = sorted(A + B + C + D_ + E + M, key=lambda e: e["t"])
