@@ -43,7 +43,7 @@ class T(unittest.TestCase):
         self.assertEqual(a["total_min"], 58)
         self.assertEqual((a["started"], a["pr_created"], a["merged"], a["released"]),
                          ("2026-11-17 10:00","2026-11-17 10:40","2026-11-17 10:50","2026-11-17 10:55"))
-        self.assertEqual((a["category"], a["source"]), ("general-purpose", "measured"))
+        self.assertEqual((a["category"], a["source"]), ("general-purpose · A", "measured"))
 
     def test_bg_and_span_deploy(self):
         b = self.rows()[0]["B"]
@@ -66,6 +66,18 @@ class T(unittest.TestCase):
         rep = io.StringIO(); S.report(list(r.values()), 1, 1, rep)
         self.assertIn("3 loops measured", rep.getvalue())
         self.assertIn("median 20.0 min", rep.getvalue())
+
+class Pairing(unittest.TestCase):
+    def test_spawn_queue_in_time_order(self):
+        evs = [ev("09:00","main","agent_spawn","fix header"), ev("09:01","main","agent_spawn","write tests"),
+               ev("09:02","a1e9x","agent_start","general-purpose"), ev("09:03","b2f8y","agent_start","general-purpose"),
+               ev("09:05","a1e9x","agent_stop"), ev("09:06","b2f8y","agent_stop"),
+               ev("09:07","heroku","release_check","x"), ev("09:07","release","release","x"), ev("09:07","watch","release","x"),
+               ev("09:08","c3d7z","agent_start","reviewer"), ev("09:09","c3d7z","agent_stop")]
+        for i, e in enumerate(evs): e["_t"] = S.datetime.datetime.fromisoformat(e["t"]); e["_i"] = i
+        rows, _, _ = S.summarize(evs)
+        self.assertEqual({r["task"]: r["category"] for r in rows},
+                         {"a1e9x": "fix header", "b2f8y": "write tests", "c3d7z": "reviewer · c3d7"})
 
 if __name__ == "__main__":
     unittest.main()

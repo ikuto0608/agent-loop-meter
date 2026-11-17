@@ -20,6 +20,9 @@ COLS = ["task", "category", "started", "pr_created", "merged", "released", "tota
         "wait_min", "test_min", "full_e2e_min", "review_min", "deploy_min", "other_min", "source"]
 STAGES = ["impl_min", "wait_min", "test_min", "review_min", "deploy_min", "other_min"]
 RELEASE_KINDS = ("release", "release_check", "deploy_end")
+# Event sources that are not agents (hook "main", release-watch "release"/old "heroku", "watch").
+# They only feed the totals, never a row.
+NON_AGENTS = ("main", "release", "heroku", "watch")
 
 
 def load(path):
@@ -41,8 +44,9 @@ def stamp(dt):
     return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
 
 
-def measure(events):
-    """events: one agent's events in time order. Returns a row dict, or None without agent_start."""
+def measure(events, desc=None):
+    """events: one agent's events in time order. desc: the Agent-tool description tied to this agent
+    (see summarize). Returns a row dict, or None without agent_start."""
     first = next((e for e in events if e["kind"] in ("agent_spawn", "agent_start")), None)
     if first is None:
         return None
@@ -92,7 +96,8 @@ def measure(events):
         elif k == "deploy_end": deploy = False
     total = sum(b.values())
     pr = next((e["_t"] for e in events if e["kind"] == "pr"), None)
-    row = {"task": events[0]["agent"], "category": (category or "agent").replace(",", " "),
+    name = desc or (f"{category} · {events[0]['agent'][:4]}" if category else "agent")
+    row = {"task": events[0]["agent"], "category": name.replace(",", " "),
            "started": stamp(first["_t"]), "pr_created": stamp(pr), "merged": stamp(merged),
            "released": stamp(last_rel), "total_min": round(total, 1), "full_e2e_min": round(e2e, 1),
            "source": "measured", "_stopped": stopped, "_start": first["_t"]}
@@ -101,13 +106,16 @@ def measure(events):
 
 
 def summarize(evs, since=None, include_open=False):
-    by = {}
+    by, descs, queue = {}, {}, []
     for e in evs:
-        if e.get("agent") in (None, "main", "release"): continue
+        # agent_spawn (PreToolUse Agent) queues its description; the next new agent id takes the oldest one.
+        if e.get("kind") == "agent_spawn" and e.get("label"): queue.append(e["label"])
+        if e.get("agent") in (None, *NON_AGENTS): continue
+        if e["agent"] not in by and queue: descs[e["agent"]] = queue.pop(0)
         by.setdefault(e["agent"], []).append(e)
     rows, skipped_open, skipped_nostart = [], 0, 0
     for events in by.values():
-        r = measure(events)
+        r = measure(events, descs.get(events[0]["agent"]))
         if r is None: skipped_nostart += 1; continue
         if since and r["_start"].date() < since: continue
         if not r["_stopped"] and not include_open: skipped_open += 1; continue

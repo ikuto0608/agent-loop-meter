@@ -153,12 +153,16 @@ const kindColor = (k) => KIND_COLOR[k] || "#8aa2ff"; // unknown kinds fall into 
 const kindCounts = new Map();
 
 const agents = new Map();
+// Event sources that are not agents: counted in the totals only, no card or lane.
+const NON_AGENTS = ["main", "release", "heroku", "watch"];
+// agent_spawn (PreToolUse Agent, from main) descriptions, oldest first. The next new agent id takes one.
+const spawnQueue = [];
 let lockHolder = null, merges = 0;
 const now = () => Date.now();
 const fmt = (ms) => { const s = Math.max(0, Math.round(ms/1000)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
 
 function agentOf(id) {
-  if (!agents.has(id)) agents.set(id, { label: id, start: null, end: null, state: "work", since: null, segs: [] });
+  if (!agents.has(id)) agents.set(id, { label: id.slice(0, 4), desc: spawnQueue.shift() || "", type: "", start: null, end: null, state: "work", since: null, segs: [] });
   return agents.get(id);
 }
 function setState(a, state, ts) {
@@ -171,10 +175,12 @@ function onEvent(e) {
   if (!(ts > 0)) return;
   kindCounts.set(e.kind, (kindCounts.get(e.kind) || 0) + 1);
   if (e.kind === "merge") merges++;
-  if (e.agent === "main" || e.agent === "release") { render(); return; }
+  if (e.kind === "agent_spawn" && e.label) spawnQueue.push(e.label);
+  if (NON_AGENTS.includes(e.agent)) { render(); return; }
   const a = agentOf(e.agent);
   if (a.start == null) { a.start = ts; a.since = ts; }
-  if (e.kind === "agent_start" && e.label) a.label = e.label;
+  if (e.kind === "agent_start" && e.label) a.type = e.label;
+  a.label = a.desc || (a.type ? a.type + " · " + e.agent.slice(0, 4) : e.agent.slice(0, 4));
   if (e.kind === "lock_wait") setState(a, "wait", ts);
   if (e.kind === "lock_got") { setState(a, "work", ts); lockHolder = a; }
   if (e.kind === "lock_free") { setState(a, "work", ts); if (lockHolder === a) lockHolder = null; }
