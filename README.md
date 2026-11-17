@@ -87,6 +87,14 @@ One JSON object per line:
 74 min per task; tests 37%, implementation 33%, queueing 13%. Run
 `node dashboard/server.mjs --before examples/small-shop-site/before-tasks.csv` to see it as the "before" strip.
 
+## Reading the screen
+
+One loop = from handing out a task to confirming it in production. The page has three parts, top to bottom:
+
+1. **Now**: one card per running agent (name, current stage, elapsed time).
+2. **Today**: one row per agent; time runs left to right with clock ticks below; the legend above gives the stage colors.
+3. **Before**: past tasks, one row each (length = minutes, color = stage). The top bar adds all of them up with percentages; the dotted line is the median. Hover any bar for its stage and minutes.
+
 ## No secrets in the log
 
 - The **command text is never written**: only `kind` and the short `label` from your rule.
@@ -115,6 +123,14 @@ Claude Code の 1 ループ (指示 -> 実装 -> テスト待ち -> テスト ->
 2. `loop-meter.config.json` の `rules` に、自分のプロジェクトのテスト・マージ・ロックのコマンドを正規表現で書く (`match` / `kind` / `label`)。場所を変えるときは環境変数 `LOOP_METER_CONFIG`。無ければ既定の例で動く。
 3. `node dashboard/server.mjs` を起動して `http://127.0.0.1:4317/?lang=ja` を開く。
 4. 任意: `--before <csv>` で「前」の内訳の帯を出す。無ければその区画は隠れる。
+
+## 画面の見方
+
+1 ループ = 担当を出してから本番確認まで。画面は上から 3 つの区画です。
+
+1. **いま**: 動いている担当ごとに 1 枚のカード (名前・今の段階・経過時間)。
+2. **今日**: 1 行 1 担当。横軸は時刻で左が早く、下に時刻の目盛り、上に色の凡例。
+3. **前**: 過去の 1 本ずつ (長さが分・色が段階)。いちばん上の帯が全部を足した内訳 (%)、縦の点線が中央値。帯にマウスを載せると段階と分が出ます。
 
 ## 仕組みと安全
 

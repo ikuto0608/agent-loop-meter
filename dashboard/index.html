@@ -39,6 +39,32 @@
   #before .lane { grid-template-columns:150px 1fr 60px; margin:3px 0; }
   #before .bar { height:12px; border-radius:6px; }
   .note { color:var(--soft); font:13px var(--mono); margin-top:10px; }
+  .intro { padding:16px 28px 0; }
+  .intro .lead { font-size:18px; font-weight:600; margin:0 0 10px; line-height:1.5; }
+  .roles { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin:0; padding:0; list-style:none; font-size:13px; color:var(--soft); }
+  .roles li { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:8px 12px; }
+  .roles b { color:var(--main); font-weight:700; margin-right:4px; }
+  .how { color:var(--soft); font-size:13px; margin:-4px 0 12px; }
+  .card dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:2px 12px; align-items:baseline; }
+  .card dt { font-size:11px; color:var(--soft); letter-spacing:.08em; }
+  .card dd { margin:0; }
+  .card .who { font-size:16px; color:var(--ink); }
+  .axis { display:grid; grid-template-columns:200px 1fr 70px; gap:10px; margin-top:4px; }
+  .ticks { position:relative; height:30px; border-top:1px solid var(--line); }
+  .tick { position:absolute; top:0; transform:translateX(-50%); font:11px var(--mono); color:var(--soft); padding-top:4px; }
+  .tick::before { content:""; position:absolute; left:50%; top:-5px; height:5px; border-left:1px solid var(--soft); }
+  .tick.first { transform:none; } .tick.first::before { left:0; }
+  .axis-cap { font-size:11px; color:var(--soft); text-align:right; padding-top:4px; }
+  .total { display:grid; grid-template-columns:150px 1fr 60px; gap:10px; align-items:center; margin:4px 0 6px; }
+  .total .name { font-size:13px; color:var(--ink); font-weight:600; }
+  .total .bar { height:30px; border-radius:8px; }
+  .total .seg { display:flex; align-items:center; justify-content:center; font:700 11px var(--mono); color:#160f24; white-space:nowrap; overflow:hidden; }
+  .sub { font-size:11px; color:var(--soft); letter-spacing:.1em; margin:12px 0 4px; }
+  .rows { position:relative; margin-top:22px; }
+  .median { position:absolute; top:0; bottom:0; border-left:2px dotted var(--ink); pointer-events:none; }
+  .median span { position:absolute; top:-18px; left:4px; font:11px var(--mono); color:var(--ink); white-space:nowrap; }
+  .overlay { position:absolute; inset:0; display:grid; grid-template-columns:150px 1fr 60px; gap:10px; pointer-events:none; }
+  .overlay > div { position:relative; }
   [hidden] { display:none; }
   .empty { color:var(--soft); font-size:14px; }
 </style>
@@ -51,39 +77,66 @@
   <span class="stat"><b id="nDone">0</b><span data-i="done"></span></span>
   <span class="stat"><b id="nMerge">0</b><span data-i="merges"></span></span>
 </header>
+<div class="intro">
+  <p class="lead" data-i="lead"></p>
+  <ul class="roles">
+    <li><b>1</b><span data-i="role1"></span></li>
+    <li><b>2</b><span data-i="role2"></span></li>
+    <li><b>3</b><span data-i="role3"></span></li>
+  </ul>
+</div>
 <main>
   <section>
     <h2 data-i="liveH"></h2>
+    <p class="how" data-i="live_how"></p>
     <div class="cards" id="cards"></div>
   </section>
   <section>
     <h2 data-i="lanesH"></h2>
+    <p class="how" data-i="lanes_how"></p>
     <div class="legend"><span><i style="background:var(--work)"></i><span data-i="work"></span></span><span><i style="background:var(--test)"></i><span data-i="test"></span></span><span><i style="background:var(--wait)"></i><span data-i="wait"></span></span></div>
-    <div id="lanes"><p class="empty" data-i="waiting"></p></div>
+    <div id="lanes"><p class="empty" data-i="empty"></p></div>
+    <div class="axis" id="axis" hidden><div></div><div class="ticks" id="ticks"></div><div class="axis-cap" data-i="min"></div></div>
   </section>
   <section>
     <h2 data-i="kindsH"></h2>
+    <p class="how" data-i="kinds_how"></p>
     <div class="legend" id="kinds"></div>
   </section>
   <section id="before" hidden>
     <h2 id="beforeH"></h2>
+    <p class="how" id="beforeHow"></p>
     <div class="legend" id="beforeLegend"></div>
-    <div id="beforeLanes"></div>
+    <div class="total"><div class="name" id="totalName"></div><div class="bar" id="totalBar"></div><div></div></div>
+    <div class="sub" id="eachCap"></div>
+    <div class="rows"><div id="beforeLanes"></div><div class="overlay"><div></div><div id="medianBox"></div><div></div></div></div>
     <p class="note" id="beforeNote"></p>
   </section>
 </main>
 <script>
 const T = {
-  en: { active:"active agents", lock:"lock holder", done:"finished", merges:"merges", liveH:"Agents running now", lanesH:"Agent lanes (minutes)",
+  en: { lead:"1 loop = from handing out a task to confirming it in production. What is running now, and where is it waiting?",
+    role1:"Now: who is running, in which stage, for how long.", role2:"Today: one row per agent, time runs left to right.", role3:"Before: the past tasks, row by row, with the average split on top.",
+    live_how:"One card per running agent: name, current stage, elapsed time.", lanes_how:"One row per agent. Left is earlier, right is later; the scale below is clock time.",
+    kinds_how:"How many of each kind of event the hooks have recorded.", empty:"Nothing recorded yet. Start an agent in Claude Code and it shows up here (hook setup is in the README).",
+    f_name:"agent", f_stage:"stage", f_elapsed:"elapsed", min:"min", total:(n)=>`All ${n} tasks`, each:"One row per task. Bar length = minutes, color = stage.", median:(m)=>`median ${m} min`,
+    beforeHow:"One row per past task. Bar length is minutes; color is the stage. The top bar adds all of them up.",
+    active:"active agents", lock:"lock holder", done:"finished", merges:"merges", liveH:"Now: agents running", lanesH:"Today: one row per agent (left = earlier)",
     kindsH:"Events by kind", work:"working", test:"testing", wait:"waiting for lock", waiting:"Waiting for events...", none:"No agent is running.",
     state:{work:"working",test:"testing",wait:"waiting for lock",done:"done"}, free:"free",
-    beforeH:(n)=>`Before: where ${n} past tasks spent their time`, tasks:"tasks",
+    beforeH:(n)=>`Before: where the last ${n} tasks spent their time`, tasks:"tasks",
     stages:{impl_min:"implementation",test_min:"tests",wait_min:"queueing",review_min:"review",deploy_min:"deploy wait",other_min:"other"},
     note:(m,x)=>`median ${m} min, longest ${x} min.`, other:"other" },
-  ja: { active:"動いている担当", lock:"鍵を持つ担当", done:"終わった担当", merges:"マージ", liveH:"いま動いている担当", lanesH:"担当の帯 (分)",
+  ja: { lead:"1 ループ = 担当を出してから本番確認まで。いま何をしていて、どこで待っているか",
+    role1:"いま: 誰が・どの段階で・何分目か。", role2:"今日: 1 行 1 担当。左が早く、右が遅い時刻。", role3:"前: 過去の 1 本ずつ。いちばん上に全体の内訳。",
+    live_how:"動いている担当ごとに 1 枚。名前・今の段階・経過時間。", lanes_how:"1 行 1 担当。横軸は時刻 (左が早い)。下の目盛りが時刻です。",
+    kinds_how:"フックが記録した出来事を、種類ごとに数えたもの。", empty:"記録がまだありません。Claude Code で担当を出すとここに出ます (フックの入れ方は README)。",
+    f_name:"担当", f_stage:"段階", f_elapsed:"経過", min:"分", total:(n)=>`${n} 本の合計`, each:"1 行 1 本。長さが分・色は段階です。", median:(m)=>`中央値 ${m} 分`,
+    beforeHow:"過去の 1 本ごとに 1 行。長さが分・色が段階。いちばん上の帯は全部を足した内訳です。",
+    active:"動いている担当", lock:"鍵を持つ担当", done:"終わった担当", merges:"マージ", liveH:"いま動いている担当", lanesH:"今日の担当の帯 (横軸 = 時刻)",
     kindsH:"出来事の種類", work:"実装", test:"テスト", wait:"鍵の順番待ち", waiting:"記録を待っています…", none:"いま動いている担当はいません",
     state:{work:"実装",test:"テスト中",wait:"順番待ち",done:"終わり"}, free:"空き",
-    beforeH:(n)=>`「前」: 過去 ${n} 本の時間の内訳`, tasks:"本",
+    beforeH:(n)=>`前の ${n} 本: 時間はどこに使われたか`, tasks:"本",
     stages:{impl_min:"実装",test_min:"テスト",wait_min:"順番待ち",review_min:"確認役",deploy_min:"反映待ち",other_min:"その他"},
     note:(m,x)=>`中央値 ${m} 分・最長 ${x} 分。`, other:"その他" },
 };
@@ -129,6 +182,16 @@ function onEvent(e) {
   if (e.kind === "agent_stop") { setState(a, "done", ts); a.end = ts; if (lockHolder === a) lockHolder = null; }
   render();
 }
+function drawTicks(t0, span) {
+  const box = document.getElementById("ticks"); box.innerHTML = "";
+  const step = [1,2,5,10,15,30,60,120,240].find(x => span / 60000 / x <= 8) || 240;
+  const hm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0"); };
+  const stepMs = step * 60000;
+  for (let x = Math.ceil(t0 / stepMs) * stepMs; x <= t0 + span; x += stepMs) {
+    const k = document.createElement("span"); k.className = "tick" + (x === t0 ? " first" : "");
+    k.style.left = ((x - t0) / span * 100) + "%"; k.textContent = hm(x); box.appendChild(k);
+  }
+}
 const color = { work: "var(--work)", test: "var(--test)", wait: "var(--wait)" };
 function render() {
   const live = [...agents.values()].filter(a => a.end == null);
@@ -141,7 +204,7 @@ function render() {
   for (const a of live) {
     const d = document.createElement("div");
     d.className = "card " + (a.state === "test" ? "testing" : a.state === "wait" ? "waiting" : "");
-    d.innerHTML = '<div class="who"></div><div class="what"></div><div class="t"></div>';
+    d.innerHTML = '<dl><dt>' + t.f_name + '</dt><dd class="who"></dd><dt>' + t.f_stage + '</dt><dd class="what"></dd><dt>' + t.f_elapsed + '</dt><dd class="t"></dd></dl>';
     d.querySelector(".who").textContent = a.label;
     d.querySelector(".what").textContent = t.state[a.state];
     d.querySelector(".t").textContent = fmt(now() - a.start);
@@ -160,8 +223,10 @@ function render() {
   const lanes = document.getElementById("lanes");
   if (!all.length) return;
   lanes.innerHTML = "";
+  document.getElementById("axis").hidden = false;
   const t0 = Math.min(...all.map(a => a.start)), t1 = Math.max(now(), ...all.map(a => a.end || 0));
   const span = Math.max(60000, t1 - t0);
+  drawTicks(t0, span);
   for (const a of all) {
     const row = document.createElement("div"); row.className = "lane";
     const segs = [...a.segs]; if (a.end == null) segs.push({ kind: a.state, from: a.since, to: now() });
@@ -172,6 +237,7 @@ function render() {
     for (const s of segs) {
       if (s.kind === "done") continue;
       const seg = document.createElement("div"); seg.className = "seg";
+      seg.title = `${t.state[s.kind] || s.kind}: ${Math.max(1, Math.round((s.to - s.from) / 60000))} ${t.min}`;
       seg.style.left = ((s.from - t0) / span * 100) + "%";
       seg.style.width = Math.max(0.2, (s.to - s.from) / span * 100) + "%";
       seg.style.background = color[s.kind] || color.work;
@@ -197,7 +263,22 @@ fetch("/before.csv").then(r => r.ok ? r.text() : "").then(txt => {
   const total = (r) => +r.total_min || stageCols.reduce((s, c) => s + (+r[c] || 0), 0);
   const max = Math.max(...rows.map(total));
   document.getElementById("beforeH").textContent = t.beforeH(rows.length);
+  document.getElementById("beforeHow").textContent = t.beforeHow;
+  const sums = Object.fromEntries(stageCols.map(c => [c, rows.reduce((a, r) => a + (+r[c] || 0), 0)]));
+  const grand = stageCols.reduce((a, c) => a + sums[c], 0) || 1;
+  const pct = (c) => Math.round(sums[c] / grand * 100);
   document.getElementById("beforeLegend").innerHTML = stageCols.map(c => `<span><i style="background:${stageColor[c]}"></i>${t.stages[c]}</span>`).join("");
+  document.getElementById("totalName").textContent = t.total(rows.length);
+  document.getElementById("eachCap").textContent = t.each;
+  let tx = 0; const tb = document.getElementById("totalBar");
+  for (const c of stageCols) {
+    const w = sums[c] / grand * 100; if (!w) continue;
+    const seg = document.createElement("div"); seg.className = "seg";
+    seg.style.left = tx + "%"; seg.style.width = w + "%"; seg.style.background = stageColor[c];
+    seg.title = `${t.stages[c]}: ${pct(c)}% (${Math.round(sums[c])} ${t.min})`;
+    seg.textContent = w >= 7 ? `${t.stages[c]} ${pct(c)}%` : (w >= 3 ? pct(c) + "%" : "");
+    tb.appendChild(seg); tx += w;
+  }
   const box = document.getElementById("beforeLanes");
   for (const r of rows) {
     const row = document.createElement("div"); row.className = "lane";
@@ -208,12 +289,17 @@ fetch("/before.csv").then(r => r.ok ? r.text() : "").then(txt => {
     for (const c of stageCols) {
       const w = (+r[c] || 0) / max * 100; if (!w) continue;
       const seg = document.createElement("div"); seg.className = "seg";
-      seg.style.left = x + "%"; seg.style.width = w + "%"; seg.style.background = stageColor[c]; bar.appendChild(seg); x += w;
+      seg.style.left = x + "%"; seg.style.width = w + "%"; seg.style.background = stageColor[c];
+      seg.title = `${t.stages[c]}: ${Math.round(+r[c])} ${t.min}`; bar.appendChild(seg); x += w;
     }
     box.appendChild(row);
   }
   const sorted = rows.map(total).sort((a, b) => a - b);
-  document.getElementById("beforeNote").textContent = t.note(Math.round(sorted[Math.floor(sorted.length / 2)]), Math.round(sorted[sorted.length - 1]));
+  const med = sorted[Math.floor(sorted.length / 2)];
+  document.getElementById("beforeNote").textContent = t.note(Math.round(med), Math.round(sorted[sorted.length - 1]));
+  const ml = document.createElement("div"); ml.className = "median"; ml.style.left = (med / max * 100) + "%";
+  ml.innerHTML = "<span></span>"; ml.firstChild.textContent = t.median(Math.round(med));
+  document.getElementById("medianBox").appendChild(ml);
   document.getElementById("before").hidden = false;
 });
 </script>
