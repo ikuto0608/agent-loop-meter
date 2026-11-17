@@ -108,6 +108,7 @@
     <p class="how" id="beforeHow"></p>
     <div class="legend" id="beforeLegend"></div>
     <div class="total"><div class="name" id="totalName"></div><div class="bar" id="totalBar"></div><div></div></div>
+    <p class="note" id="totalNote" style="margin:0 0 4px;font-size:11px"></p>
     <div class="sub" id="eachCap"></div>
     <div class="rows"><div id="beforeLanes"></div><div class="overlay"><div></div><div id="medianBox"></div><div></div></div></div>
     <p class="note" id="beforeNote"></p>
@@ -119,7 +120,7 @@ const T = {
     role1:"Now: who is running, in which stage, for how long.", role2:"Today: one row per agent, time runs left to right.", role3:"Before: the past tasks, row by row, with the average split on top.",
     live_how:"One card per running agent: name, current stage, elapsed time.", lanes_how:"One row per agent. Left is earlier, right is later; the scale below is clock time.",
     kinds_how:"How many of each kind of event the hooks have recorded.", empty:"Nothing recorded yet. Start an agent in Claude Code and it shows up here (hook setup is in the README).",
-    f_name:"agent", f_stage:"stage", f_elapsed:"elapsed", min:"min", total:(n)=>`All ${n} tasks`, each:"One row per task. Bar length = minutes, color = stage.", median:(m)=>`median ${m} min`,
+    shareNote:"Stage shares come from the tasks with an agent report. Estimated rows cannot see queueing.", f_name:"agent", f_stage:"stage", f_elapsed:"elapsed", min:"min", total:(n)=>`All ${n} tasks`, each:"One row per task. Bar length = minutes, color = stage.", median:(m)=>`median ${m} min`,
     beforeHow:"One row per past task. Bar length is minutes; color is the stage. The top bar adds all of them up.",
     active:"active agents", lock:"lock holder", done:"finished", merges:"merges", liveH:"Now: agents running", lanesH:"Today: one row per agent (left = earlier)",
     kindsH:"Events by kind", work:"working", test:"testing", wait:"waiting for lock", waiting:"Waiting for events...", none:"No agent is running.",
@@ -131,7 +132,7 @@ const T = {
     role1:"いま: 誰が・どの段階で・何分目か。", role2:"今日: 1 行 1 担当。左が早く、右が遅い時刻。", role3:"前: 過去の 1 本ずつ。いちばん上に全体の内訳。",
     live_how:"動いている担当ごとに 1 枚。名前・今の段階・経過時間。", lanes_how:"1 行 1 担当。横軸は時刻 (左が早い)。下の目盛りが時刻です。",
     kinds_how:"フックが記録した出来事を、種類ごとに数えたもの。", empty:"記録がまだありません。Claude Code で担当を出すとここに出ます (フックの入れ方は README)。",
-    f_name:"担当", f_stage:"段階", f_elapsed:"経過", min:"分", total:(n)=>`${n} 本の合計`, each:"1 行 1 本。長さが分・色は段階です。", median:(m)=>`中央値 ${m} 分`,
+    shareNote:"段階の割合は担当の報告がある本数から。推定の行は順番待ちを拾えない", f_name:"担当", f_stage:"段階", f_elapsed:"経過", min:"分", total:(n)=>`${n} 本の合計`, each:"1 行 1 本。長さが分・色は段階です。", median:(m)=>`中央値 ${m} 分`,
     beforeHow:"過去の 1 本ごとに 1 行。長さが分・色が段階。いちばん上の帯は全部を足した内訳です。",
     active:"動いている担当", lock:"鍵を持つ担当", done:"終わった担当", merges:"マージ", liveH:"いま動いている担当", lanesH:"今日の担当の帯 (横軸 = 時刻)",
     kindsH:"出来事の種類", work:"実装", test:"テスト", wait:"鍵の順番待ち", waiting:"記録を待っています…", none:"いま動いている担当はいません",
@@ -255,7 +256,7 @@ new EventSource("/events").onmessage = (m) => { try { onEvent(JSON.parse(m.data)
 fetch("/before.csv").then(r => r.ok ? r.text() : "").then(txt => {
   if (!txt.trim()) return;
   const [head, ...lines] = txt.trim().split("\n");
-  const cols = head.split(",");
+  const cols = head.split(",").map(c => c.trim());
   const rows = lines.map(l => Object.fromEntries(l.split(",").map((v, i) => [cols[i], v])));
   const stageCols = ["impl_min","test_min","wait_min","review_min","deploy_min","other_min"].filter(c => cols.includes(c));
   if (!rows.length || !stageCols.length) return;
@@ -264,11 +265,14 @@ fetch("/before.csv").then(r => r.ok ? r.text() : "").then(txt => {
   const max = Math.max(...rows.map(total));
   document.getElementById("beforeH").textContent = t.beforeH(rows.length);
   document.getElementById("beforeHow").textContent = t.beforeHow;
-  const sums = Object.fromEntries(stageCols.map(c => [c, rows.reduce((a, r) => a + (+r[c] || 0), 0)]));
+  const rep_ = cols.includes("source") ? rows.filter(r => (r.source || "").trim() === "report") : [];
+  const base = rep_.length ? rep_ : rows;
+  const sums = Object.fromEntries(stageCols.map(c => [c, base.reduce((a, r) => a + (+r[c] || 0), 0)]));
   const grand = stageCols.reduce((a, c) => a + sums[c], 0) || 1;
   const pct = (c) => Math.round(sums[c] / grand * 100);
   document.getElementById("beforeLegend").innerHTML = stageCols.map(c => `<span><i style="background:${stageColor[c]}"></i>${t.stages[c]}</span>`).join("");
-  document.getElementById("totalName").textContent = t.total(rows.length);
+  document.getElementById("totalName").textContent = t.total(base.length);
+  if (rep_.length && rep_.length < rows.length) document.getElementById("totalNote").textContent = t.shareNote;
   document.getElementById("eachCap").textContent = t.each;
   let tx = 0; const tb = document.getElementById("totalBar");
   for (const c of stageCols) {
