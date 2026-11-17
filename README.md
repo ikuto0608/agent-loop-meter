@@ -98,6 +98,12 @@ time (`attach_ext` in `tools/summarize.py`, the same in the dashboard); `run` (t
 together. Its queueing is counted as wait and taken out of the test (wait > test). Set `LOOP_METER_AGENT` to skip the
 guess. Write only a fixed label, never the command line.
 
+**Measuring note.** A command run in the background (`run_in_background`) is reported by the hook as finished the moment it
+is handed off, so its `test_end` is not the real end of the test (a 20-minute run can show up as 0.1 min). For heavy tests,
+write the `lock_*` lines from the script itself (the three bash lines above): the script's `lock_wait..lock_got` is the
+queue, `lock_got..lock_free` is the test, and where the two disagree the script's span wins over the hook's `test_start`/`test_end`
+(`tools/summarize.py` and the dashboard both). Without script lines, a background test falls back to "until the agent's next event".
+
 ## Example
 
 [`examples/small-shop-site/`](examples/small-shop-site/README.md): 55 sub-agent tasks on a small website, median

@@ -49,7 +49,7 @@ class Ext(unittest.TestCase):
 
     def test_background_test_keeps_going_after_wait(self):
         y = self.rows(Y)["Y"]
-        self.assertEqual((y["wait_min"], y["test_min"]), (5, 15))
+        self.assertEqual((y["wait_min"], y["test_min"], y["impl_min"]), (5, 20, 5))  # 3 + 15:08..15:25 (the script wins over the push at 15:20)
 
     def test_two_runs_each_own_wait(self):
         X2 = [dict(e, agent="Z") if e["agent"] == "X" else e for e in X]
@@ -63,6 +63,29 @@ G = [ev("16:00","G","agent_start","w"), ev("16:00","G","test_start","street-e2e"
 H = [ev("16:00","H","agent_start","w"), ev("16:05","H","agent_stop"), ev("16:25","H","agent_start","w"), ev("16:30","H","agent_stop")]
 # M: main runs a test 17:00..17:10 (non-bg) and a push at 17:20.
 M2 = [ev("17:00","main","test_start","jest"), ev("17:10","main","test_end","jest"), ev("17:20","main","merge","pr merge")]
+
+# W: the hook sees the bg test end at once (0.1 min); the script's lock_wait 20:00..20:10 and lock_got..lock_free 20:10..20:32 are the truth.
+W = [ev("20:00","W","agent_start","worker"), ev("20:00","W","test_start","street-e2e",bg=True), ev("20:00","W","test_end","street-e2e",bg=True),
+     sx("20:00","lock_wait",11), sx("20:10","lock_got",11), ev("20:20","W","push","git push"), sx("20:32","lock_free",11),
+     ev("20:35","W","agent_stop")]
+# V: same, but the agent stops while the script still holds the lock: the time up to lock_free is still test.
+V = [ev("21:00","V","agent_start","worker"), ev("21:00","V","test_start","street-e2e",bg=True), ev("21:00","V","test_end","street-e2e",bg=True),
+     sx("21:00","lock_wait",12), sx("21:04","lock_got",12), ev("21:06","V","agent_stop"), sx("21:30","lock_free",12),
+     ev("21:50","V","agent_start","worker"), ev("21:52","V","agent_stop")]
+
+class Script(unittest.TestCase):
+    def rows(self, *groups):
+        evs = sorted(sum(groups, []), key=lambda e: e["t"])
+        rows, _, _ = S.summarize([dict(e, _t=S.datetime.datetime.fromisoformat(e["t"]), _i=i) for i, e in enumerate(evs)])
+        return {r["task"]: r for r in rows}
+
+    def test_script_span_wins_over_bg_hook(self):
+        w = self.rows(W)["W"]
+        self.assertEqual((w["wait_min"], w["test_min"], w["impl_min"], w["full_e2e_min"]), (10, 22, 3, 22))
+
+    def test_script_span_outlives_agent_stop(self):
+        v = self.rows(V)["V"]
+        self.assertEqual((v["wait_min"], v["test_min"], v["impl_min"]), (4, 26, 2))
 
 class Gap(unittest.TestCase):
     def rows(self, *groups, **kw):

@@ -8,6 +8,8 @@ Stage rules (the same state machine as the dashboard). Default stage is impl. Pr
 several apply: wait > test > review > deploy > impl.
   lock_wait..lock_got (or lock_free)  -> wait
   test_start..test_end                -> test (a background test, bg=true, lasts until the agent's next event)
+  script lock_got..lock_free          -> test, and wins over the hook's test_start/test_end: a command run in the
+                                         background ends at once for the hook, so the script's own span is the real one
   review_start..review_end            -> review
   deploy_start..deploy_end            -> deploy
   after the first merge: up to the last release/release_check/deploy_end event -> deploy;
@@ -15,7 +17,7 @@ several apply: wait > test > review > deploy > impl.
 An outside script can write its own lock events ("src":"script", "agent":"ext" unless it sets LOOP_METER_AGENT).
 They are handed to the agent that has a test with the same label open at that time (see attach_ext), so the
 script's queueing counts as wait and is taken out of that test (wait > test). A bash test run in the background
-keeps counting as test after the lock is got.
+keeps counting as test after the lock is got, until the script's lock_free.
 Time counts only between agent_start and agent_stop (a resumed agent adds each stretch). The gap between a stop
 and the same agent's next event is test when a background test (bg=true) was still open at the stop (test_end with
 bg and nothing after it), else idle: counted nowhere. --include-main adds one row for the main agent.
@@ -107,8 +109,17 @@ def measure(events, desc=None):
     category = ""
     stopped = False
     script_wait = False
+    cur = -1
+    held = False   # an outside script run is open (lock_wait..lock_free): its span is the truth, whatever the hook said
+    slabel = ""
+    # test_start events followed by a script lock_wait (before the agent's next test_start/stop): the script times that test
+    covered, pend = set(), None
+    for i, ev_ in enumerate(events):
+        if ev_["kind"] == "test_start": pend = i
+        elif ev_["kind"] == "agent_stop": pend = None
+        elif ev_["kind"] == "lock_wait" and ev_.get("src") == "script" and pend is not None: covered.add(pend)
     gap = False   # stopped while a background test was still open: the time until the agent's next event is test
-    for e in events:
+    for idx, e in enumerate(events):
         t = e["_t"]
         if (active or gap) and last is not None:
             dt = (t - last).total_seconds() / 60
@@ -124,7 +135,7 @@ def measure(events, desc=None):
         last = t
         k = e["kind"]
         script = e.get("src") == "script"
-        if k == "agent_stop" and bg: gap = True
+        if k == "agent_stop" and (bg or held): gap = True   # the script (or bg test) still runs after the agent stopped
         elif gap and not script: gap = False
         if bg and k not in ("test_start", "test_end") and not script and not gap:
             test = bg = False
@@ -135,14 +146,22 @@ def measure(events, desc=None):
             active = False; stopped = True
             review = deploy = False
             if not gap: wait = test = bg = False
-        elif k == "lock_wait": wait = True; script_wait = e.get("src") == "script"
-        elif k in ("lock_got", "lock_free"): wait = False
-        elif k == "test_start": test = True; label = e.get("label") or ""
+        elif k == "lock_wait":
+            wait = True; script_wait = script
+            if script: held = True; slabel = e.get("label") or ""
+        elif k in ("lock_got", "lock_free"):
+            wait = False
+            if script and k == "lock_got": test = True; label = e.get("label") or label   # got: the script's test runs
+            elif script:   # lock_free: the script says the test is over
+                held = test = bg = False
+                if not active: gap = False
+        elif k == "test_start": test = True; label = e.get("label") or ""; cur = idx
         elif k == "test_end":
-            if e.get("bg"): bg = True
+            if e.get("bg"): bg = cur not in covered   # a covered test ends with the script's lock_free, not the next event
             else:
-                test = False
-                if script_wait: wait = script_wait = False  # the script died without a lock_free
+                test = held
+                if held and slabel and (e.get("label") or "").startswith(slabel):
+                    held = test = wait = script_wait = False   # the script died without a lock_free
         elif k == "review_start": review = True
         elif k == "review_end": review = False
         elif k == "deploy_start": deploy = True
