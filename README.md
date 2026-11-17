@@ -93,7 +93,7 @@ ev() { [ -d "$(dirname "$M")" ] && printf '{"t":"%s","agent":"%s","kind":"%s","l
 ev lock_wait; until mkdir "$LOCK" 2>/dev/null; do sleep 5; done; ev lock_got; trap 'rmdir "$LOCK"; ev lock_free' EXIT
 ```
 
-With `agent":"ext"` the tool hands the events to the agent that has a test with the same `label` (prefix) open at that
+With `"agent":"ext"` the tool hands the events to the agent that has a test with the same `label` (prefix) open at that
 time (`attach_ext` in `tools/summarize.py`, the same in the dashboard); `run` (the script's pid) ties wait, got and free
 together. Its queueing is counted as wait and taken out of the test (wait > test). Set `LOOP_METER_AGENT` to skip the
 guess. Write only a fixed label, never the command line.

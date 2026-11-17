@@ -60,6 +60,8 @@ def attach_ext(evs):
             run = e.get("run")
             if k == "lock_wait":
                 label = e.get("label") or ""
+                if run is not None and run in by_run:  # the same script waits again (e.g. after a remote fallback)
+                    waits.append(by_run[run]); out.append({**e, "agent": by_run[run]}); continue
                 c = [(ag, v) for ag, v in open_test.items() if not v[1] and v[0].startswith(label)]
                 if not c: continue
                 ag = c[0][0]
