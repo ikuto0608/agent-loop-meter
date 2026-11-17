@@ -94,7 +94,7 @@
   <section>
     <h2 data-i="lanesH"></h2>
     <p class="how" data-i="lanes_how"></p>
-    <div class="legend"><span><i style="background:var(--work)"></i><span data-i="work"></span></span><span><i style="background:var(--test)"></i><span data-i="test"></span></span><span><i style="background:var(--wait)"></i><span data-i="wait"></span></span></div>
+    <div class="legend"><span><i style="background:var(--work)"></i><span data-i="work"></span></span><span><i style="background:var(--test)"></i><span data-i="test"></span></span><span><i style="background:var(--wait)"></i><span data-i="wait"></span></span><span><i style="background:var(--review)"></i><span data-i="review"></span></span><span><i style="background:var(--deploy)"></i><span data-i="deploy"></span></span></div>
     <div id="lanes"><p class="empty" data-i="empty"></p></div>
     <div class="axis" id="axis" hidden><div></div><div class="ticks" id="ticks"></div><div class="axis-cap" data-i="min"></div></div>
   </section>
@@ -123,8 +123,8 @@ const T = {
     shareNote:"Stage shares come from the tasks with an agent report. Estimated rows cannot see queueing.", f_name:"agent", f_stage:"stage", f_elapsed:"elapsed", min:"min", total:(n)=>`All ${n} tasks`, each:"One row per task. Bar length = minutes, color = stage.", median:(m)=>`median ${m} min`,
     beforeHow:"One row per past task. Bar length is minutes; color is the stage. The top bar adds all of them up.",
     active:"active agents", lock:"lock holder", done:"finished", merges:"merges", liveH:"Now: agents running", lanesH:"Today: one row per agent (left = earlier)",
-    kindsH:"Events by kind", work:"working", test:"testing", wait:"waiting for lock", waiting:"Waiting for events...", none:"No agent is running.",
-    state:{work:"working",test:"testing",wait:"waiting for lock",done:"done"}, free:"free",
+    kindsH:"Events by kind", work:"working", test:"testing", wait:"waiting for lock", review:"review", deploy:"deploy", waiting:"Waiting for events...", none:"No agent is running.",
+    state:{work:"working",test:"testing",wait:"waiting for lock",review:"review",deploy:"deploy",done:"done"}, free:"free",
     beforeH:(n)=>`Before: where the last ${n} tasks spent their time`, tasks:"tasks",
     stages:{impl_min:"implementation",test_min:"tests",wait_min:"queueing",review_min:"review",deploy_min:"deploy wait",other_min:"other"},
     note:(m,x)=>`median ${m} min, longest ${x} min.`, other:"other" },
@@ -135,8 +135,8 @@ const T = {
     shareNote:"段階の割合は担当の報告がある本数から。推定の行は順番待ちを拾えない", f_name:"担当", f_stage:"段階", f_elapsed:"経過", min:"分", total:(n)=>`${n} 本の合計`, each:"1 行 1 本。長さが分・色は段階です。", median:(m)=>`中央値 ${m} 分`,
     beforeHow:"過去の 1 本ごとに 1 行。長さが分・色が段階。いちばん上の帯は全部を足した内訳です。",
     active:"動いている担当", lock:"鍵を持つ担当", done:"終わった担当", merges:"マージ", liveH:"いま動いている担当", lanesH:"今日の担当の帯 (横軸 = 時刻)",
-    kindsH:"出来事の種類", work:"実装", test:"テスト", wait:"鍵の順番待ち", waiting:"記録を待っています…", none:"いま動いている担当はいません",
-    state:{work:"実装",test:"テスト中",wait:"順番待ち",done:"終わり"}, free:"空き",
+    kindsH:"出来事の種類", work:"実装", test:"テスト", wait:"鍵の順番待ち", review:"確認役", deploy:"反映", waiting:"記録を待っています…", none:"いま動いている担当はいません",
+    state:{work:"実装",test:"テスト中",wait:"順番待ち",review:"確認中",deploy:"反映中",done:"終わり"}, free:"空き",
     beforeH:(n)=>`前の ${n} 本: 時間はどこに使われたか`, tasks:"本",
     stages:{impl_min:"実装",test_min:"テスト",wait_min:"順番待ち",review_min:"確認役",deploy_min:"反映待ち",other_min:"その他"},
     note:(m,x)=>`中央値 ${m} 分・最長 ${x} 分。`, other:"その他" },
@@ -148,7 +148,7 @@ document.querySelectorAll("[data-i]").forEach(el => el.textContent = t[el.datase
 
 const PALETTE = ["#a855f7","#ff7ab6","#5b4d7a","#7ee0c3","#ffd88a","#8aa2ff","#c9bbe8","#f1e9ff"];
 const KIND_COLOR = { agent_spawn:"#a855f7", agent_start:"#a855f7", agent_stop:"#5b4d7a", lock_wait:"#5b4d7a", lock_got:"#c9bbe8", lock_free:"#c9bbe8",
-  test_start:"#ff7ab6", test_end:"#ff7ab6", merge:"#ffd88a", pr:"#ffd88a", release:"#ffd88a", release_check:"#ffd88a" };
+  test_start:"#ff7ab6", test_end:"#ff7ab6", review_start:"#7ee0c3", review_end:"#7ee0c3", deploy_start:"#ffd88a", deploy_end:"#ffd88a", merge:"#ffd88a", pr:"#ffd88a", release:"#ffd88a", release_check:"#ffd88a" };
 const kindColor = (k) => KIND_COLOR[k] || "#8aa2ff"; // unknown kinds fall into "other"
 const kindCounts = new Map();
 
@@ -180,6 +180,10 @@ function onEvent(e) {
   if (e.kind === "lock_free") { setState(a, "work", ts); if (lockHolder === a) lockHolder = null; }
   if (e.kind === "test_start") setState(a, "test", ts);
   if (e.kind === "test_end" && !e.bg) setState(a, "work", ts);
+  if (e.kind === "review_start") setState(a, "review", ts);
+  if (e.kind === "review_end") setState(a, "work", ts);
+  if (e.kind === "deploy_start") setState(a, "deploy", ts);
+  if (e.kind === "deploy_end") setState(a, "work", ts);
   if (e.kind === "agent_stop") { setState(a, "done", ts); a.end = ts; if (lockHolder === a) lockHolder = null; }
   render();
 }
@@ -193,7 +197,7 @@ function drawTicks(t0, span) {
     k.style.left = ((x - t0) / span * 100) + "%"; k.textContent = hm(x); box.appendChild(k);
   }
 }
-const color = { work: "var(--work)", test: "var(--test)", wait: "var(--wait)" };
+const color = { work: "var(--work)", test: "var(--test)", wait: "var(--wait)", review: "var(--review)", deploy: "var(--deploy)" };
 function render() {
   const live = [...agents.values()].filter(a => a.end == null);
   document.getElementById("nActive").textContent = live.length;
@@ -265,7 +269,7 @@ fetch("/before.csv").then(r => r.ok ? r.text() : "").then(txt => {
   const max = Math.max(...rows.map(total));
   document.getElementById("beforeH").textContent = t.beforeH(rows.length);
   document.getElementById("beforeHow").textContent = t.beforeHow;
-  const rep_ = cols.includes("source") ? rows.filter(r => (r.source || "").trim() === "report") : [];
+  const rep_ = cols.includes("source") ? rows.filter(r => ["report", "measured"].includes((r.source || "").trim())) : [];
   const base = rep_.length ? rep_ : rows;
   const sums = Object.fromEntries(stageCols.map(c => [c, base.reduce((a, r) => a + (+r[c] || 0), 0)]));
   const grand = stageCols.reduce((a, c) => a + sums[c], 0) || 1;

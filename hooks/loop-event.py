@@ -3,6 +3,10 @@
 one JSON line to $OUT (default ~/.claude/loop-events.jsonl). Never prints, never blocks.
 Only the KIND and a short LABEL of a command are recorded -- never the command text.
 
+A rule may set "phase": "span" (write <kind>_start before and <kind>_end after the command)
+or "point" (write one <kind> line after it; the default, except kind "test" = span and
+"lock_wait" = before/after pair).
+
 Rules come from $LOOP_METER_CONFIG, else <repo>/loop-meter.config.json, else the built-in
 defaults below. First matching rule wins."""
 import json, os, re, sys, datetime
@@ -21,6 +25,9 @@ DEFAULT_RULES = [
     {"match": r"\bcargo\s+test\b", "kind": "test", "label": "cargo test"},
     {"match": r"\b(npm|yarn|pnpm)\s+(run\s+)?test\b", "kind": "test", "label": "npm test"},
     {"match": r"\bdocker\s+build\b", "kind": "build", "label": "docker build"},
+    {"match": r"\bgh\s+pr\s+review\b|/code-review\b", "kind": "review", "phase": "span", "label": "review"},
+    {"match": r"\bfly\s+deploy\b|\bkubectl\s+rollout\b|\bvercel\s+(deploy|--prod|promote)\b", "kind": "deploy", "phase": "span", "label": "deploy"},
+    {"match": r"\bheroku\s+releases\b", "kind": "release_check", "label": "heroku releases"},
     {"match": r"\bgh\s+pr\s+merge\b", "kind": "merge", "label": "pr merge"},
     {"match": r"\bgh\s+pr\s+create\b", "kind": "pr", "label": "pr create"},
     {"match": r"\bgit\s+push\b", "kind": "push", "label": "git push"},
@@ -41,10 +48,11 @@ def classify_bash(cmd, rules):
     for r in rules:
         try:
             if re.search(r["match"], cmd or ""):
-                return r.get("kind") or "other", r.get("label") or r.get("kind") or ""
+                kind = r.get("kind") or "other"
+                return kind, r.get("label") or kind, r.get("phase")
         except Exception:
             continue
-    return None, None
+    return None, None, None
 
 def main():
     try:
@@ -64,13 +72,14 @@ def main():
         if tool == "Agent" and ev == "PreToolUse":
             rec = {"kind": "agent_spawn", "label": (ti.get("description") or "")[:60]}
         elif tool == "Bash":
-            k, label = classify_bash(ti.get("command", ""), load_rules())
+            k, label, phase = classify_bash(ti.get("command", ""), load_rules())
             if k:
                 start = ev == "PreToolUse"
                 if k == "lock_wait":  # acquire command: waiting before, holding after
                     rec = {"kind": "lock_wait" if start else "lock_got", "label": label}
-                elif k == "test":
-                    rec = {"kind": "test_start" if start else "test_end", "label": label,
+                elif phase == "span" or (k == "test" and phase is None):
+                    # span: write <kind>_start before and <kind>_end after (test is a span by default)
+                    rec = {"kind": k + ("_start" if start else "_end"), "label": label,
                            "bg": bool(ti.get("run_in_background"))}
                 elif not start:
                     rec = {"kind": k, "label": label}

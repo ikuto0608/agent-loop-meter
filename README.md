@@ -10,6 +10,7 @@ testing, how long each took. Works in any project; zero dependencies (Python 3 s
 - [Set up in 5 minutes](#set-up-in-5-minutes)
 - [Event format](#event-format)
 - [Example](#example)
+- [Build the "before" from your own log](#build-the-before-from-your-own-log)
 - [No secrets in the log](#no-secrets-in-the-log)
 - [Limits](#limits)
 - [日本語](#日本語)
@@ -54,7 +55,7 @@ What counts as "test" or "merge" in *your* project is a list of regexes in `loop
 
    First matching rule wins. `kind` is one of `lock_wait`, `lock_got`, `lock_free`, `test`, `merge`, `pr`,
    `release_check`, `review`, or any word you like (shown as "other" in the dashboard). Semantics:
-   `lock_wait` logs waiting before the command and holding after it; `test` logs start and end;
+   `lock_wait` logs waiting before the command and holding after it; `test` and any rule with `"phase": "span"` log start and end;
    everything else logs once, after the command.
 3. **Start the dashboard:** `node dashboard/server.mjs [--log <jsonl>] [--port 4317] [--before <csv>]`
    and open `http://127.0.0.1:4317` (add `?lang=ja` for Japanese). Log path defaults to `~/.claude/loop-events.jsonl`;
@@ -77,7 +78,7 @@ One JSON object per line:
 | `agent_spawn` | PreToolUse on the Agent tool; label = first 60 chars of its description |
 | `agent_start` / `agent_stop` | SubagentStart / SubagentStop |
 | `lock_wait` / `lock_got` / `lock_free` | rules with kind `lock_wait` (before / after) and `lock_free` |
-| `test_start` / `test_end` | before / after a `test` rule (`bg` = background run) |
+| `test_start` / `test_end` (also `review_*`, `deploy_*`, any `"phase":"span"` kind) | before / after the command (`bg` = background run) |
 | any other rule kind (`pr`, `merge`, ...) | after the command |
 | `release` | `watch/release-watch.sh` |
 
@@ -86,6 +87,26 @@ One JSON object per line:
 [`examples/small-shop-site/`](examples/small-shop-site/README.md): 55 sub-agent tasks on a small website, median
 74 min per task; tests 37%, implementation 33%, queueing 13%. Run
 `node dashboard/server.mjs --before examples/small-shop-site/before-tasks.csv` to see it as the "before" strip.
+
+## Build the "before" from your own log
+
+`tools/summarize.py` turns the JSONL into the same CSV as the example, one row per agent (`source=measured`), so
+anyone gets the same split by the same rules:
+
+```
+python3 tools/summarize.py --since 2026-11-17 --out tasks.csv      # [--log path] [--include-open]
+node dashboard/server.mjs --before tasks.csv
+```
+
+One loop = `agent_start` -> `agent_stop` (agents never stopped are left out unless `--include-open`; a resumed agent adds each stretch). Stages, in priority order:
+`lock_wait..lock_got` = wait; `test_start..test_end` = test (a background test lasts until the agent's next event; `full_e2e_min` = tests whose label contains `e2e`/`full`);
+`review_start..review_end` = review; `deploy_start..deploy_end` = deploy; everything else = impl.
+After the first `merge`, the time up to the last `release` / `release_check` / `deploy_end` is deploy and the rest is other; with no such event nothing after the merge is called deploy.
+Prints loops, median and stage shares. Test: `python3 -m unittest tools/test_summarize.py`.
+
+Rule options: `"phase": "span"` writes `<kind>_start` before and `<kind>_end` after the command (default for `test`; shipped for `review` and `deploy`); `"point"` (default for other kinds) writes one line after it.
+The shipped `review` rule matches `gh pr review` and `/code-review` only. `deploy` is a span for `fly deploy`, `kubectl rollout`, `vercel deploy|--prod|promote`; `heroku releases` stays a one-shot `release_check` (a poll after the merge, not a duration). Edit both to your project.
+Not adopted: treating a sub-agent whose description says "review" as review. The Agent spawn event is logged under `main`, not under the new agent's id, so it cannot be tied to that agent's minutes without guessing.
 
 ## Reading the screen
 
@@ -123,6 +144,21 @@ Claude Code の 1 ループ (指示 -> 実装 -> テスト待ち -> テスト ->
 2. `loop-meter.config.json` の `rules` に、自分のプロジェクトのテスト・マージ・ロックのコマンドを正規表現で書く (`match` / `kind` / `label`)。場所を変えるときは環境変数 `LOOP_METER_CONFIG`。無ければ既定の例で動く。
 3. `node dashboard/server.mjs` を起動して `http://127.0.0.1:4317/?lang=ja` を開く。
 4. 任意: `--before <csv>` で「前」の内訳の帯を出す。無ければその区画は隠れる。
+
+## 自分の記録から「前」を作る
+
+`tools/summarize.py` が JSONL から事例と同じ形の CSV (1 行 1 担当・`source=measured`) を作ります。誰が回しても同じ決まりで段階が分かれます。
+
+```
+python3 tools/summarize.py --since 2026-11-17 --out tasks.csv      # [--log path] [--include-open]
+node dashboard/server.mjs --before tasks.csv
+```
+
+1 ループ = `agent_start` から `agent_stop` まで (止まっていない担当は `--include-open` が無ければ除く)。段階は優先順に、鍵待ち (`lock_wait`〜`lock_got`)・テスト (バックグラウンドは次の出来事まで・ラベルに `e2e`/`full` を含むものは `full_e2e_min` にも)・確認役 (`review_start`〜`review_end`)・反映 (`deploy_start`〜`deploy_end`)・残りは実装。マージのあと、最後の `release`/`release_check`/`deploy_end` までを反映待ち、それ以降はその他。反映の出来事が無ければマージ後も反映待ちにはしません。
+本数・中央値・段階の割合も出力します。確認: `python3 -m unittest tools/test_summarize.py`。
+
+ルールの `"phase": "span"` は前後に `<kind>_start`/`<kind>_end` を書き、`"point"` は後に 1 行 (`test` だけ既定が span)。既定の review は `gh pr review` と `/code-review` のみ、deploy は `fly deploy` などの span、`heroku releases` は期間でなく確認なので 1 回の `release_check` のまま。プロジェクトに合わせて書き換えてください。
+「説明に review と書いたサブエージェントを確認役にする」案は採りません。担当を出す出来事は `main` 名義で、新しい担当の id と結べない (推測になる) ためです。
 
 ## 画面の見方
 

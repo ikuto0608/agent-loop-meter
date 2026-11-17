@@ -10,6 +10,9 @@
     { "match": "\\bcargo\\s+test\\b",               "kind": "test",          "label": "cargo test" },
     { "match": "\\b(npm|yarn|pnpm)\\s+(run\\s+)?test\\b", "kind": "test",    "label": "npm test" },
     { "match": "\\bdocker\\s+build\\b",             "kind": "build",         "label": "docker build" },
+    { "match": "\\bgh\\s+pr\\s+review\\b|/code-review\\b", "kind": "review", "phase": "span", "label": "review" },
+    { "match": "\\bfly\\s+deploy\\b|\\bkubectl\\s+rollout\\b|\\bvercel\\s+(deploy|--prod|promote)\\b", "kind": "deploy", "phase": "span", "label": "deploy" },
+    { "match": "\\bheroku\\s+releases\\b",       "kind": "release_check", "phase": "point", "label": "heroku releases" },
     { "match": "\\bgh\\s+pr\\s+merge\\b",           "kind": "merge",         "label": "pr merge" },
     { "match": "\\bgh\\s+pr\\s+create\\b",          "kind": "pr",            "label": "pr create" },
     { "match": "\\bgit\\s+push\\b",                 "kind": "push",          "label": "git push" }
