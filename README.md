@@ -110,9 +110,8 @@ Not adopted: treating a sub-agent whose description says "review" as review. The
 
 ## Reading the screen
 
-One loop = from handing out a task to confirming it in production. The page has a live map and three parts, top to bottom:
+One loop = from handing out a task to confirming it in production. The page has three parts, top to bottom:
 
-0. **Constellation**: the control tower in the middle, running agents on orbits around it (color = stage), the lock and production on the sides. A dot runs along a line for each event; a merge flies to production, a `release` makes production swell once, and finished agents drift out into the "shipped" count. With `prefers-reduced-motion` it is a still picture.
 1. **Now**: one card per running agent (name, current stage, elapsed time).
 2. **Today**: one row per agent; time runs left to right with clock ticks below; the legend above gives the stage colors.
 3. **Before**: past tasks, one row each (length = minutes, color = stage). The top bar adds all of them up with percentages; the dotted line is the median. Hover any bar for its stage and minutes.
@@ -163,9 +162,8 @@ node dashboard/server.mjs --before tasks.csv
 
 ## 画面の見方
 
-1 ループ = 担当を出してから本番確認まで。画面はいちばん上の地図と、その下の 3 つの区画です。
+1 ループ = 担当を出してから本番確認まで。画面は上から 3 つの区画です。
 
-0. **星座**: 中央が管制塔、周りの軌道に動いている担当 (色は段階)、左に鍵・右に本番。出来事ごとに線の上を粒が流れ、マージは本番へ飛び、`release` で本番が一度ふわっと明るくなり、終わった担当は外へ流れて「出荷」の数に入ります。`prefers-reduced-motion` のときは止まった絵です。
 1. **いま**: 動いている担当ごとに 1 枚のカード (名前・今の段階・経過時間)。
 2. **今日**: 1 行 1 担当。横軸は時刻で左が早く、下に時刻の目盛り、上に色の凡例。
 3. **前**: 過去の 1 本ずつ (長さが分・色が段階)。いちばん上の帯が全部を足した内訳 (%)、縦の点線が中央値。帯にマウスを載せると段階と分が出ます。
