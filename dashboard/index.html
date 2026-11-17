@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agent-loop-meter</title>
+<style>
+  :root { --bg:#1d1611; --panel:#2a1f17; --ink:#f3e6d3; --soft:#a08c78; --work:#f39a3c; --test:#e8533a; --wait:#6b5a4b; --review:#7f9cc0; --deploy:#9cc36b; --other:#b48ead; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui,-apple-system,"Hiragino Sans",sans-serif; }
+  header { display:flex; gap:32px; align-items:baseline; padding:20px 28px; border-bottom:1px solid #3b2a1e; flex-wrap:wrap; }
+  h1 { font-size:22px; margin:0; letter-spacing:.02em; }
+  .stat b { font-size:28px; color:var(--work); margin-right:6px; }
+  .stat { color:var(--soft); }
+  main { padding:20px 28px; display:grid; gap:24px; }
+  section { background:var(--panel); border-radius:12px; padding:18px 20px; }
+  h2 { font-size:15px; margin:0 0 12px; color:var(--soft); font-weight:600; letter-spacing:.04em; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:13px; color:var(--soft); margin-bottom:10px; }
+  .legend i { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+  .cards { display:flex; gap:12px; flex-wrap:wrap; }
+  .card { background:#3b2a1e; border-radius:10px; padding:12px 14px; min-width:220px; }
+  .card .who { font-size:13px; color:var(--soft); }
+  .card .what { font-size:18px; }
+  .card .t { font-variant-numeric:tabular-nums; font-size:26px; color:var(--work); }
+  .card.testing .t { color:var(--test); } .card.waiting .t { color:#c4b09a; }
+  .lane { display:grid; grid-template-columns:200px 1fr 70px; gap:10px; align-items:center; margin:6px 0; }
+  .lane .name { font-size:13px; color:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bar { position:relative; height:18px; background:#211912; border-radius:4px; overflow:hidden; }
+  .seg { position:absolute; top:0; bottom:0; }
+  .lane .min { font-variant-numeric:tabular-nums; text-align:right; font-size:13px; }
+  #before .lane { grid-template-columns:150px 1fr 60px; margin:3px 0; }
+  #before .bar { height:12px; }
+  .note { color:var(--soft); font-size:13px; margin-top:10px; }
+  .empty { color:var(--soft); font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>agent-loop-meter</h1>
+  <span class="stat"><b id="nActive">0</b>動いている担当</span>
+  <span class="stat"><b id="lock">—</b>重いテストの鍵</span>
+  <span class="stat"><b id="nDone">0</b>今日終わった担当</span>
+  <span class="stat"><b id="nMerge">0</b>マージ</span>
+</header>
+<main>
+  <section>
+    <h2>いま動いている担当</h2>
+    <div class="cards" id="cards"><p class="empty">まだ担当がいません</p></div>
+  </section>
+  <section>
+    <h2>今日の担当の帯 (分)</h2>
+    <div class="legend"><span><i style="background:var(--work)"></i>実装・その他</span><span><i style="background:var(--test)"></i>テスト</span><span><i style="background:var(--wait)"></i>鍵の順番待ち</span></div>
+    <div id="lanes"><p class="empty">記録を待っています…</p></div>
+  </section>
+  <section id="before">
+    <h2>「前」: 1 本の直しの内訳 (3 日・55 本)</h2>
+    <div class="legend"><span><i style="background:var(--work)"></i>実装</span><span><i style="background:var(--test)"></i>テスト</span><span><i style="background:var(--wait)"></i>順番待ち</span><span><i style="background:var(--review)"></i>確認役</span><span><i style="background:var(--deploy)"></i>反映待ち</span><span><i style="background:var(--other)"></i>その他</span></div>
+    <div id="beforeLanes"></div>
+    <p class="note" id="beforeNote"></p>
+  </section>
+</main>
+<script>
+const agents = new Map(); // id -> {label, start, end, state, since, segs:[{kind,from,to}]}
+let lockHolder = null, merges = 0;
+const now = () => Date.now();
+const fmt = (ms) => { const s = Math.max(0, Math.round(ms/1000)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
+
+function agentOf(id) {
+  if (!agents.has(id)) agents.set(id, { label: id, start: null, end: null, state: "work", since: null, segs: [] });
+  return agents.get(id);
+}
+function setState(a, state, t) {
+  if (a.state === state) return;
+  if (a.since != null) a.segs.push({ kind: a.state, from: a.since, to: t });
+  a.state = state; a.since = t;
+}
+function onEvent(e) {
+  const t = Date.parse(e.t);
+  if (e.kind === "merge") merges++;
+  if (e.agent === "main" || e.agent === "heroku") { render(); return; }
+  const a = agentOf(e.agent);
+  if (a.start == null) { a.start = t; a.since = t; }
+  if (e.kind === "agent_start" && e.label) a.label = e.label;
+  if (e.kind === "lock_wait") setState(a, "wait", t);
+  if (e.kind === "lock_got") { setState(a, "work", t); lockHolder = a; }
+  if (e.kind === "lock_free") { setState(a, "work", t); if (lockHolder === a) lockHolder = null; }
+  if (e.kind === "test_start") setState(a, "test", t);
+  if (e.kind === "test_end" && !e.bg) setState(a, "work", t);
+  if (e.kind === "agent_stop") { setState(a, "done", t); a.end = t; if (lockHolder === a) lockHolder = null; }
+  render();
+}
+const color = { work: "var(--work)", test: "var(--test)", wait: "var(--wait)" };
+const label = { work: "実装", test: "テスト中", wait: "順番待ち", done: "終わり" };
+function render() {
+  const live = [...agents.values()].filter(a => a.end == null);
+  document.getElementById("nActive").textContent = live.length;
+  document.getElementById("nDone").textContent = [...agents.values()].filter(a => a.end != null).length;
+  document.getElementById("nMerge").textContent = merges;
+  document.getElementById("lock").textContent = lockHolder ? lockHolder.label.slice(0, 18) : "空き";
+  const cards = document.getElementById("cards");
+  cards.innerHTML = live.length ? "" : '<p class="empty">いま動いている担当はいません</p>';
+  for (const a of live) {
+    const d = document.createElement("div");
+    d.className = "card " + (a.state === "test" ? "testing" : a.state === "wait" ? "waiting" : "");
+    d.innerHTML = `<div class="who"></div><div class="what">${label[a.state]}</div><div class="t">${fmt(now() - a.start)}</div>`;
+    d.querySelector(".who").textContent = a.label;
+    cards.appendChild(d);
+  }
+  const all = [...agents.values()];
+  const lanes = document.getElementById("lanes");
+  if (!all.length) return;
+  lanes.innerHTML = "";
+  const t0 = Math.min(...all.map(a => a.start)), t1 = Math.max(now(), ...all.map(a => a.end || 0));
+  const span = Math.max(60000, t1 - t0);
+  for (const a of all) {
+    const row = document.createElement("div"); row.className = "lane";
+    const segs = [...a.segs]; if (a.end == null) segs.push({ kind: a.state, from: a.since, to: now() });
+    row.innerHTML = `<div class="name"></div><div class="bar"></div><div class="min">${Math.round(((a.end || now()) - a.start) / 60000)}</div>`;
+    row.querySelector(".name").textContent = a.label;
+    const bar = row.querySelector(".bar");
+    for (const s of segs) {
+      if (s.kind === "done") continue;
+      const seg = document.createElement("div"); seg.className = "seg";
+      seg.style.left = ((s.from - t0) / span * 100) + "%";
+      seg.style.width = Math.max(0.2, (s.to - s.from) / span * 100) + "%";
+      seg.style.background = color[s.kind] || color.work;
+      bar.appendChild(seg);
+    }
+    lanes.appendChild(row);
+  }
+}
+setInterval(render, 1000);
+new EventSource("/events").onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch {} };
+
+fetch("/before.csv").then(r => r.text()).then(txt => {
+  const [head, ...lines] = txt.trim().split("\n");
+  const cols = head.split(",");
+  const rows = lines.map(l => Object.fromEntries(l.split(",").map((v, i) => [cols[i], v])));
+  const max = Math.max(...rows.map(r => +r.total_min));
+  const parts = [["impl_min","var(--work)"],["test_min","var(--test)"],["wait_min","var(--wait)"],["review_min","var(--review)"],["deploy_min","var(--deploy)"],["other_min","var(--other)"]];
+  const box = document.getElementById("beforeLanes");
+  for (const r of rows) {
+    const row = document.createElement("div"); row.className = "lane";
+    row.innerHTML = `<div class="name"></div><div class="bar"></div><div class="min">${r.total_min}</div>`;
+    row.querySelector(".name").textContent = `#${r.task} ${r.category}`;
+    let x = 0; const bar = row.querySelector(".bar");
+    for (const [k, c] of parts) {
+      const w = (+r[k] || 0) / max * 100; if (!w) continue;
+      const seg = document.createElement("div"); seg.className = "seg";
+      seg.style.left = x + "%"; seg.style.width = w + "%"; seg.style.background = c; bar.appendChild(seg); x += w;
+    }
+    box.appendChild(row);
+  }
+  const sorted = rows.map(r => +r.total_min).sort((a, b) => a - b);
+  document.getElementById("beforeNote").textContent = `中央値 ${sorted[Math.floor(sorted.length / 2)]} 分・最長 ${sorted[sorted.length - 1]} 分。source=estimated の行は時刻から推定 (順番待ちを拾えず実装に含まれる)。`;
+});
+</script>
+</body>
+</html>

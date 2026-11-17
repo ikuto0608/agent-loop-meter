@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash|Agent", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }
+    ],
+    "SubagentStart": [
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }
+    ]
+  }
+}
