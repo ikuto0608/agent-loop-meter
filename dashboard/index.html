@@ -118,9 +118,9 @@
 const T = {
   en: { lead:"1 loop = from handing out a task to confirming it in production. What is running now, and where is it waiting?",
     role1:"Now: who is running, in which stage, for how long.", role2:"Today: one row per agent, time runs left to right.", role3:"Before: the past tasks, row by row, with the average split on top.",
-    live_how:"One card per running agent: name, current stage, elapsed time.", lanes_how:"One row per agent. Left is earlier, right is later; the scale below is clock time.",
+    live_how:"One card per running agent: name, current stage, elapsed time.", lanes_how:"One row per agent. Left is earlier, right is later; the scale below is clock time, and the number on the right is that agent's minutes so far.",
     kinds_how:"How many of each kind of event the hooks have recorded.", empty:"Nothing recorded yet. Start an agent in Claude Code and it shows up here (hook setup is in the README).",
-    shareNote:"Stage shares come from the tasks with an agent report. Estimated rows cannot see queueing.", f_name:"agent", f_stage:"stage", f_elapsed:"elapsed", min:"min", total:(n)=>`All ${n} tasks`, each:"One row per task. Bar length = minutes, color = stage.", median:(m)=>`median ${m} min`,
+    shareNote:"Stage shares come from the tasks with an agent report. Estimated rows cannot see queueing.", f_name:"agent", f_stage:"stage", f_elapsed:"elapsed", min:"min", elapsedLive:"Minutes since this agent started (still running)", elapsedDone:"Minutes from start to stop for this agent", total:(n)=>`All ${n} tasks`, each:"One row per task. Bar length = minutes, color = stage.", median:(m)=>`median ${m} min`,
     beforeHow:"One row per past task. Bar length is minutes; color is the stage. The top bar adds all of them up.",
     active:"active agents", lock:"lock holder", done:"finished", merges:"merges", liveH:"Now: agents running", lanesH:"Today: one row per agent (left = earlier)",
     kindsH:"Events by kind", work:"working", test:"testing", wait:"waiting for lock", review:"review", deploy:"deploy", waiting:"Waiting for events...", none:"No agent is running.",
@@ -130,9 +130,9 @@ const T = {
     note:(m,x)=>`median ${m} min, longest ${x} min.`, other:"other" },
   ja: { lead:"1 ループ = 担当を出してから本番確認まで。いま何をしていて、どこで待っているか",
     role1:"いま: 誰が・どの段階で・何分目か。", role2:"今日: 1 行 1 担当。左が早く、右が遅い時刻。", role3:"前: 過去の 1 本ずつ。いちばん上に全体の内訳。",
-    live_how:"動いている担当ごとに 1 枚。名前・今の段階・経過時間。", lanes_how:"1 行 1 担当。横軸は時刻 (左が早い)。下の目盛りが時刻です。",
+    live_how:"動いている担当ごとに 1 枚。名前・今の段階・経過時間。", lanes_how:"1 行 1 担当。横軸は時刻 (左が早い)。下の目盛りが時刻、右の数字はその担当にかかった分 (動いている担当は今までの分)。",
     kinds_how:"フックが記録した出来事を、種類ごとに数えたもの。", empty:"記録がまだありません。Claude Code で担当を出すとここに出ます (フックの入れ方は README)。",
-    shareNote:"段階の割合は担当の報告がある本数から。推定の行は順番待ちを拾えない", f_name:"担当", f_stage:"段階", f_elapsed:"経過", min:"分", total:(n)=>`${n} 本の合計`, each:"1 行 1 本。長さが分・色は段階です。", median:(m)=>`中央値 ${m} 分`,
+    shareNote:"段階の割合は担当の報告がある本数から。推定の行は順番待ちを拾えない", f_name:"担当", f_stage:"段階", f_elapsed:"経過", min:"分", elapsedLive:"この担当を出してからの経過 (動いている)", elapsedDone:"この担当の開始から終了までの時間", total:(n)=>`${n} 本の合計`, each:"1 行 1 本。長さが分・色は段階です。", median:(m)=>`中央値 ${m} 分`,
     beforeHow:"過去の 1 本ごとに 1 行。長さが分・色が段階。いちばん上の帯は全部を足した内訳です。",
     active:"動いている担当", lock:"鍵を持つ担当", done:"終わった担当", merges:"マージ", liveH:"いま動いている担当", lanesH:"今日の担当の帯 (横軸 = 時刻)",
     kindsH:"出来事の種類", work:"実装", test:"テスト", wait:"鍵の順番待ち", review:"確認役", deploy:"反映", waiting:"記録を待っています…", none:"いま動いている担当はいません",
@@ -237,7 +237,9 @@ function render() {
     const segs = [...a.segs]; if (a.end == null) segs.push({ kind: a.state, from: a.since, to: now() });
     row.innerHTML = '<div class="name"></div><div class="bar"></div><div class="min"></div>';
     row.querySelector(".name").textContent = a.label;
-    row.querySelector(".min").textContent = Math.round(((a.end || now()) - a.start) / 60000);
+    const minEl = row.querySelector(".min");
+    minEl.textContent = `${Math.round(((a.end || now()) - a.start) / 60000)} ${t.min}`;
+    minEl.title = a.end == null ? t.elapsedLive : t.elapsedDone;
     const bar = row.querySelector(".bar");
     for (const s of segs) {
       if (s.kind === "done") continue;
@@ -292,7 +294,7 @@ fetch("/before.csv").then(r => r.ok ? r.text() : "").then(txt => {
     const row = document.createElement("div"); row.className = "lane";
     row.innerHTML = '<div class="name"></div><div class="bar"></div><div class="min"></div>';
     row.querySelector(".name").textContent = `#${r.task || ""} ${r.category || ""}`.trim();
-    row.querySelector(".min").textContent = Math.round(total(r));
+    row.querySelector(".min").textContent = `${Math.round(total(r))} ${t.min}`;
     let x = 0; const bar = row.querySelector(".bar");
     for (const c of stageCols) {
       const w = (+r[c] || 0) / max * 100; if (!w) continue;
