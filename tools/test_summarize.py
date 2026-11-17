@@ -25,6 +25,38 @@ D_ = [ev("13:00","D","agent_start","open"), ev("13:05","D","push","git push")]
 E = [ev("13:00","E","agent_stop")]
 M = [ev("10:56","main","release_check","heroku releases")]
 
+# X: a test (street-e2e) 14:00..14:30 holds an ext script wait 14:02..14:12 (run 7); Y bg test: test_end(bg) at once,
+# script waits 15:03..15:08 and the test keeps going until Y's next event at 15:20.
+def sx(hm, kind, run, label="street-e2e"):
+    return {"t": f"{D}{hm}:00+09:00", "agent": "ext", "kind": kind, "label": label, "src": "script", "run": run}
+X = [ev("14:00","X","agent_start","worker"), ev("14:00","X","test_start","street-e2e"),
+     sx("14:02","lock_wait",7), sx("14:12","lock_got",7), sx("14:30","lock_free",7),
+     ev("14:30","X","test_end","street-e2e"), ev("14:35","X","agent_stop")]
+Y = [ev("15:00","Y","agent_start","worker"), ev("15:00","Y","test_start","street-e2e",bg=True), ev("15:00","Y","test_end","street-e2e",bg=True),
+     sx("15:03","lock_wait",8), sx("15:08","lock_got",8), sx("15:25","lock_free",8),
+     ev("15:20","Y","push","git push"), ev("15:30","Y","agent_stop")]
+
+class Ext(unittest.TestCase):
+    def rows(self, *groups):
+        evs = sorted(sum(groups, []), key=lambda e: e["t"])
+        rows, _, _ = S.summarize([dict(e, _t=S.datetime.datetime.fromisoformat(e["t"]), _i=i) for i, e in enumerate(evs)])
+        return {r["task"]: r for r in rows}
+
+    def test_wait_is_taken_out_of_test(self):
+        x = self.rows(X)["X"]
+        self.assertEqual((x["wait_min"], x["test_min"], x["impl_min"], x["total_min"]), (10, 20, 5, 35))
+        self.assertEqual(x["full_e2e_min"], 20)
+
+    def test_background_test_keeps_going_after_wait(self):
+        y = self.rows(Y)["Y"]
+        self.assertEqual((y["wait_min"], y["test_min"]), (5, 15))
+
+    def test_two_runs_each_own_wait(self):
+        X2 = [dict(e, agent="Z") if e["agent"] == "X" else e for e in X]
+        X2 = [dict(e, run=9) if e["agent"] == "ext" else e for e in X2]
+        r = self.rows(X, X2)
+        self.assertEqual((r["X"]["wait_min"], r["Z"]["wait_min"]), (10, 10))
+
 class T(unittest.TestCase):
     def rows(self, **kw):
         evs = sorted(A + B + C + D_ + E + M, key=lambda e: e["t"])

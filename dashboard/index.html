@@ -170,9 +170,37 @@ function setState(a, state, ts) {
   if (a.since != null) a.segs.push({ kind: a.state, from: a.since, to: ts });
   a.state = state; a.since = ts;
 }
+// Lock events an outside script writes itself ({"src":"script","agent":"ext"}) belong to the agent whose test
+// with the same label is open: one wait claims one test (oldest first); got/free follow by "run" id.
+const extRuns = new Map(); let extLast = null;
+function ownExt(e) {
+  const a = [...agents.entries()].filter(([, v]) => v.end == null && v.testLabel != null);
+  if (e.kind === "lock_wait") {
+    const c = a.filter(([, v]) => !v.extClaimed && v.testLabel.startsWith(e.label || ""))
+      .sort((x, y) => x[1].testSince - y[1].testSince)[0];
+    if (!c) return null;
+    c[1].extClaimed = true; extLast = c[0];
+    if (e.run != null) extRuns.set(e.run, c[0]);
+    return c[0];
+  }
+  return (e.run != null && extRuns.get(e.run)) || extLast;
+}
 function onEvent(e) {
   const ts = Date.parse(e.t);
   if (!(ts > 0)) return;
+  const script = e.src === "script" && e.agent === "ext";
+  if (script && /^lock_(wait|got|free)$/.test(e.kind)) {
+    kindCounts.set(e.kind, (kindCounts.get(e.kind) || 0) + 1);
+    const id = ownExt(e);
+    const a = id && agents.get(id);
+    if (!a) { render(); return; }
+    if (e.kind === "lock_wait") { a.beforeWait = a.state; setState(a, "wait", ts); }
+    else {
+      if (a.state === "wait") setState(a, a.beforeWait || "work", ts); // back to the test it waited inside
+      if (e.kind === "lock_got") lockHolder = a; else if (lockHolder === a) lockHolder = null;
+    }
+    render(); return;
+  }
   kindCounts.set(e.kind, (kindCounts.get(e.kind) || 0) + 1);
   if (e.kind === "merge") merges++;
   if (e.kind === "agent_spawn" && e.label) spawnQueue.push(e.label);
@@ -184,8 +212,8 @@ function onEvent(e) {
   if (e.kind === "lock_wait") setState(a, "wait", ts);
   if (e.kind === "lock_got") { setState(a, "work", ts); lockHolder = a; }
   if (e.kind === "lock_free") { setState(a, "work", ts); if (lockHolder === a) lockHolder = null; }
-  if (e.kind === "test_start") setState(a, "test", ts);
-  if (e.kind === "test_end" && !e.bg) setState(a, "work", ts);
+  if (e.kind === "test_start") { setState(a, "test", ts); a.testLabel = e.label || ""; a.testSince = ts; a.extClaimed = false; }
+  if (e.kind === "test_end" && !e.bg) { setState(a, "work", ts); a.testLabel = null; }
   if (e.kind === "review_start") setState(a, "review", ts);
   if (e.kind === "review_end") setState(a, "work", ts);
   if (e.kind === "deploy_start") setState(a, "deploy", ts);

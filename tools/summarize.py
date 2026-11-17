@@ -12,6 +12,10 @@ several apply: wait > test > review > deploy > impl.
   deploy_start..deploy_end            -> deploy
   after the first merge: up to the last release/release_check/deploy_end event -> deploy;
                          after that (or when there is no such event) -> other
+An outside script can write its own lock events ("src":"script", "agent":"ext" unless it sets LOOP_METER_AGENT).
+They are handed to the agent that has a test with the same label open at that time (see attach_ext), so the
+script's queueing counts as wait and is taken out of that test (wait > test). A bash test run in the background
+keeps counting as test after the lock is got.
 Time counts only between agent_start and agent_stop (a resumed agent adds each stretch).
 """
 import argparse, csv, datetime, json, os, statistics, sys
@@ -40,6 +44,43 @@ def load(path):
     return evs
 
 
+EXT = "ext"
+
+
+def attach_ext(evs):
+    """Give the lock events a script writes itself ("src":"script", agent "ext") to the agent whose test with
+    the same label (prefix) is open at that time. One wait claims one test (first started first); got/free follow
+    their wait by the script's "run" id, else the oldest open wait. Events nobody can own are dropped."""
+    open_test = {}   # agent -> [label, claimed]
+    by_run, waits = {}, []   # run id -> agent ; agents with an open ext wait, oldest first
+    out = []
+    for e in evs:
+        k, a = e.get("kind"), e.get("agent")
+        if a == EXT and e.get("src") == "script" and k in ("lock_wait", "lock_got", "lock_free"):
+            run = e.get("run")
+            if k == "lock_wait":
+                label = e.get("label") or ""
+                c = [(ag, v) for ag, v in open_test.items() if not v[1] and v[0].startswith(label)]
+                if not c: continue
+                ag = c[0][0]
+                open_test[ag][1] = True
+                if run is not None: by_run[run] = ag
+                waits.append(ag)
+            else:
+                ag = by_run.get(run) if run is not None else None
+                if ag is None and waits: ag = waits[0]
+                if ag is None: continue
+                if ag in waits: waits.remove(ag)
+            out.append({**e, "agent": ag})
+            continue
+        out.append(e)
+        if a in (None, EXT, *NON_AGENTS): continue
+        if k == "test_start": open_test[a] = [e.get("label") or "", False]
+        elif k == "test_end" and not e.get("bg"): open_test.pop(a, None)
+        elif k == "agent_stop": open_test.pop(a, None)
+    return out
+
+
 def stamp(dt):
     return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
 
@@ -61,6 +102,7 @@ def measure(events, desc=None):
     last = None
     category = ""
     stopped = False
+    script_wait = False
     for e in events:
         t = e["_t"]
         if active and last is not None:
@@ -76,7 +118,7 @@ def measure(events, desc=None):
             else: b["impl_min"] += dt
         last = t
         k = e["kind"]
-        if bg and k not in ("test_start", "test_end"):
+        if bg and k not in ("test_start", "test_end") and e.get("src") != "script":
             test = bg = False
         if k in ("agent_spawn", "agent_start"):
             if k == "agent_start" or not category: category = e.get("label") or category
@@ -84,12 +126,14 @@ def measure(events, desc=None):
         elif k == "agent_stop":
             active = False; stopped = True
             wait = test = review = deploy = bg = False
-        elif k == "lock_wait": wait = True
+        elif k == "lock_wait": wait = True; script_wait = e.get("src") == "script"
         elif k in ("lock_got", "lock_free"): wait = False
         elif k == "test_start": test = True; label = e.get("label") or ""
         elif k == "test_end":
             if e.get("bg"): bg = True
-            else: test = False
+            else:
+                test = False
+                if script_wait: wait = script_wait = False  # the script died without a lock_free
         elif k == "review_start": review = True
         elif k == "review_end": review = False
         elif k == "deploy_start": deploy = True
@@ -107,7 +151,7 @@ def measure(events, desc=None):
 
 def summarize(evs, since=None, include_open=False):
     by, descs, queue = {}, {}, []
-    for e in evs:
+    for e in attach_ext(evs):
         # agent_spawn (PreToolUse Agent) queues its description; the next new agent id takes the oldest one.
         if e.get("kind") == "agent_spawn" and e.get("label"): queue.append(e["label"])
         if e.get("agent") in (None, *NON_AGENTS): continue
