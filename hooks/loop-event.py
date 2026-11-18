@@ -54,6 +54,15 @@ def classify_bash(cmd, rules):
             continue
     return None, None, None
 
+AGENT_ID_RE = re.compile(r'agent_?id["\']?\s*[:=]\s*["\']?([A-Za-z0-9_-]{8,})', re.I)
+
+def agent_id_of(resp):
+    """The id of the agent an Agent-tool call started, from its tool_response (a string or a structure)."""
+    if isinstance(resp, dict) and resp.get("agentId"):
+        return str(resp["agentId"])
+    m = AGENT_ID_RE.search(resp if isinstance(resp, str) else json.dumps(resp, ensure_ascii=False))
+    return m.group(1) if m else None
+
 def main():
     try:
         p = json.load(sys.stdin)
@@ -71,6 +80,20 @@ def main():
         ti = p.get("tool_input") or {}
         if tool == "Agent" and ev == "PreToolUse":
             rec = {"kind": "agent_spawn", "label": (ti.get("description") or "")[:60]}
+            if ti.get("isolation") == "remote":
+                rec["iso"] = "remote"   # runs in the cloud: no SubagentStart ever reaches this machine
+        elif tool == "Agent" and ev == "PostToolUse":
+            # the real id of the agent that was just started: names it exactly (no guessing by order)
+            aid = agent_id_of(p.get("tool_response"))
+            if aid:
+                rec = {"kind": "agent_named", "label": (ti.get("description") or "")[:60], "target": aid}
+                if ti.get("isolation") == "remote":
+                    rec["iso"] = "remote"
+        elif tool == "TaskStop" and ev == "PostToolUse":
+            # stopping a task sends no SubagentStop: write the stop ourselves
+            tid = ti.get("task_id") or ti.get("shell_id")
+            if tid:
+                agent, rec = str(tid), {"kind": "agent_stop", "label": "stopped"}
         elif tool == "Bash":
             k, label, phase = classify_bash(ti.get("command", ""), load_rules())
             if k:

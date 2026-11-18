@@ -2,7 +2,7 @@
 // Tails a JSONL event log written by hooks/loop-event.py and streams new lines to the
 // browser with Server-Sent Events. Also serves the "before" CSV for the comparison strip.
 //
-//   node dashboard/server.mjs [--log ~/.claude/loop-events.jsonl] [--port 4317] [--before path/to/tasks.csv]
+//   node dashboard/server.mjs [--log ~/.claude/loop-events.jsonl] [--port 4317] [--before path/to/tasks.csv] [--stale-hours 6]
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,6 +16,7 @@ const arg = (k, d) => {
 };
 const LOG = (arg("--log", "~/.claude/loop-events.jsonl")).replace(/^~/, os.homedir());
 const PORT = Number(arg("--port", "4317"));
+const STALE_HOURS = Number(arg("--stale-hours", "6")); // an agent silent this long (no stop) is stale: no card
 const BEFORE = arg("--before", null); // optional "before" CSV; the strip is hidden without it
 
 const clients = new Set();
@@ -65,6 +66,10 @@ http
       clients.add(res);
       req.on("close", () => clients.delete(res));
       return;
+    }
+    if (req.url === "/config.json") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ stale_hours: STALE_HOURS }));
     }
     if (req.url === "/before.csv") {
       if (!BEFORE || !fs.existsSync(BEFORE)) {

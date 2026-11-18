@@ -162,12 +162,18 @@ const agents = new Map();
 const NON_AGENTS = ["main", "release", "heroku", "watch"];
 // agent_spawn (PreToolUse Agent, from main) descriptions, oldest first. The next new agent id takes one.
 const spawnQueue = [];
+// agent_named (PostToolUse Agent: description + the real agent id) beats the queue. id -> description.
+const named = new Map();
+// An agent with no event for this long and no stop is stale: no card, no count; its band stays up to its last event.
+let STALE_MS = 6 * 3600e3;
+fetch("/config.json").then(r => r.ok ? r.json() : null).then(c => { if (c && c.stale_hours > 0) STALE_MS = c.stale_hours * 3600e3; }).catch(() => {});
+const isStale = (a) => a.end == null && now() - a.last > STALE_MS;
 let lockHolder = null, merges = 0;
 const now = () => Date.now();
 const fmt = (ms) => { const s = Math.max(0, Math.round(ms/1000)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
 
 function agentOf(id) {
-  if (!agents.has(id)) agents.set(id, { label: id.slice(0, 4), desc: spawnQueue.shift() || "", type: "", start: null, end: null, state: "work", since: null, segs: [], noStart: true, bgPending: false });
+  if (!agents.has(id)) agents.set(id, { label: id.slice(0, 4), desc: named.get(id) || spawnQueue.shift() || "", type: "", start: null, last: null, end: null, state: "work", since: null, segs: [], noStart: true, bgPending: false });
   return agents.get(id);
 }
 function setState(a, state, ts) {
@@ -197,7 +203,7 @@ function onMain(e, ts) {
   if (main.start == null) { main.start = ts; main.since = ts; }
   const isTest = e.kind === "test_start" || e.kind === "test_end";
   if (main.bgPending && !isTest) { setState(main, "idle", ts); main.bgPending = false; }
-  if (e.kind === "agent_spawn") main.marks.push({ at: ts, label: e.label || "" });
+  if (e.kind === "agent_spawn") main.marks.push({ at: ts, label: (e.iso === "remote" ? "cloud: " : "") + (e.label || "") });
   if (e.kind === "test_start") setState(main, "test", ts);
   if (e.kind === "test_end") { if (e.bg) main.bgPending = true; else setState(main, "idle", ts); }
 }
@@ -227,11 +233,20 @@ function onEvent(e) {
   }
   kindCounts.set(e.kind, (kindCounts.get(e.kind) || 0) + 1);
   if (e.kind === "merge") merges++;
-  if (e.kind === "agent_spawn" && e.label) spawnQueue.push(e.label);
+  if (e.kind === "agent_spawn" && e.label && e.iso !== "remote") spawnQueue.push(e.label); // a cloud agent never starts here
+  if (e.kind === "agent_named") {
+    if (e.target) {
+      named.set(e.target, e.label || "");
+      const q = spawnQueue.indexOf(e.label); if (q >= 0) spawnQueue.splice(q, 1);
+      const x = agents.get(e.target); if (x) { x.desc = e.label || ""; x.label = x.desc || x.label; }
+    }
+    render(); return;
+  }
   if (e.agent === "main") { onMain(e, ts); render(); return; }
   if (NON_AGENTS.includes(e.agent)) { render(); return; }
   const a = agentOf(e.agent);
   if (a.start == null) { a.start = ts; a.since = ts; }
+  a.last = ts;
   if (e.kind === "agent_start") {
     a.noStart = false;
     if (a.end != null) { a.end = null; setState(a, "work", ts); } // resumed after a stop
@@ -268,11 +283,11 @@ function drawTicks(t0, span) {
 }
 const color = { gap: "var(--test)", work: "var(--work)", test: "var(--test)", wait: "var(--wait)", review: "var(--review)", deploy: "var(--deploy)" };
 function render() {
-  const live = [...agents.values()].filter(a => a.end == null && !a.noStart);
+  const live = [...agents.values()].filter(a => a.end == null && !a.noStart && !isStale(a));
   document.getElementById("nActive").textContent = live.length;
   document.getElementById("nDone").textContent = [...agents.values()].filter(a => a.end != null && !a.noStart).length;
   document.getElementById("nMerge").textContent = merges;
-  document.getElementById("lock").textContent = lockHolder ? lockHolder.label.slice(0, 18) : t.free;
+  document.getElementById("lock").textContent = lockHolder && !isStale(lockHolder) ? lockHolder.label.slice(0, 18) : t.free;
   const cards = document.getElementById("cards");
   cards.innerHTML = live.length ? "" : `<p class="empty">${t.none}</p>`;
   for (const a of live) {
@@ -298,6 +313,7 @@ function render() {
   if (!all.length) return;
   lanes.innerHTML = "";
   document.getElementById("axis").hidden = false;
+  const endOf = (a) => a.end || (isStale(a) ? a.last : now());
   const t0 = Math.min(...all.map(a => a.start)), t1 = Math.max(now(), ...all.map(a => a.end || 0));
   const span = Math.max(60000, t1 - t0);
   drawTicks(t0, span);
@@ -324,16 +340,17 @@ function render() {
   }
   for (const a of all) {
     const row = document.createElement("div"); row.className = "lane";
-    const segs = [...a.segs]; if (a.end == null) segs.push({ kind: a.state, from: a.since, to: now() });
+    const segs = [...a.segs]; if (a.end == null) segs.push({ kind: a.state, from: a.since, to: endOf(a) });
     row.innerHTML = '<div class="name"></div><div class="bar"></div><div class="min"></div>';
     row.querySelector(".name").textContent = a.noStart ? a.label + " " + t.noStart : a.label;
     const minEl = row.querySelector(".min");
-    minEl.textContent = `${a.noStart ? 0 : Math.round(((a.end || now()) - a.start) / 60000)} ${t.min}`;
+    minEl.textContent = `${a.noStart ? 0 : Math.round((endOf(a) - a.start) / 60000)} ${t.min}`;
     if (a.noStart) {
       row.classList.add("faint");
       const dot = document.createElement("div"); dot.className = "dot"; dot.style.left = ((a.start - t0) / span * 100) + "%";
       row.querySelector(".bar").appendChild(dot); lanes.appendChild(row); continue;
     }
+    if (isStale(a)) row.classList.add("faint");
     minEl.title = a.end == null ? t.elapsedLive : t.elapsedDone;
     const bar = row.querySelector(".bar");
     for (const s of segs) {

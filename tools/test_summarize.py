@@ -160,5 +160,73 @@ class Pairing(unittest.TestCase):
         self.assertEqual({r["task"]: r["category"] for r in rows},
                          {"a1e9x": "fix header", "b2f8y": "write tests", "c3d7z": "reviewer · c3d7"})
 
+def prep(evs):
+    for i, e in enumerate(evs): e["_t"] = S.datetime.datetime.fromisoformat(e["t"]); e["_i"] = i
+    return evs
+
+class Named(unittest.TestCase):
+    def cats(self, evs, **kw):
+        rows, _, _ = S.summarize(prep(evs), **kw)
+        return {r["task"]: r["category"] for r in rows}
+
+    def test_agent_named_beats_time_order(self):
+        evs = [ev("09:00","main","agent_spawn","first"), ev("09:01","main","agent_spawn","second"),
+               ev("09:02","b2","agent_start","g"), ev("09:03","a1","agent_start","g"),
+               ev("09:03","main","agent_named","second",target="a1"), ev("09:03","main","agent_named","first",target="b2"),
+               ev("09:05","a1","agent_stop"), ev("09:05","b2","agent_stop")]
+        self.assertEqual(self.cats(evs), {"a1": "second", "b2": "first"})
+
+    def test_cloud_description_never_goes_to_a_local_agent(self):
+        evs = [ev("09:00","main","agent_spawn","cloud job",iso="remote"), ev("09:01","main","agent_spawn","local job"),
+               ev("09:02","a1","agent_start","g"), ev("09:05","a1","agent_stop")]
+        self.assertEqual(self.cats(evs), {"a1": "local job"})
+
+    def test_named_spawn_is_taken_out_of_the_queue(self):
+        evs = [ev("09:00","main","agent_spawn","cloud job",iso="remote"), ev("09:00","main","agent_named","cloud job",target="c9",iso="remote"),
+               ev("09:02","a1","agent_start","reviewer"), ev("09:05","a1","agent_stop")]
+        self.assertEqual(self.cats(evs), {"a1": "reviewer · a1"})
+
+    def test_task_stop_closes_the_agent(self):
+        evs = [ev("09:00","a1","agent_start","g"), ev("09:10","a1","agent_stop","stopped")]
+        rows, so, _ = S.summarize(prep(evs))
+        self.assertEqual((len(rows), so, rows[0]["total_min"]), (1, 0, 10))
+
+    def test_stale_after_six_hours(self):
+        evs = [ev("09:00","a1","agent_start","g"), ev("09:10","a1","push","git push"),
+               ev("16:00","a2","agent_start","g"), ev("16:01","a2","push","git push")]
+        rows, so, _ = S.summarize(prep(evs), include_open=True)
+        self.assertEqual(([r["task"] for r in rows], so), (["a2"], 1))
+        rows, so, _ = S.summarize(prep(evs), include_open=True, stale_hours=8)
+        self.assertEqual(len(rows), 2)
+
+class Hook(unittest.TestCase):
+    def run_hook(self, payload):
+        import subprocess, tempfile
+        out = tempfile.mktemp(suffix=".jsonl")
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "hooks", "loop-event.py")],
+                       input=json.dumps(payload), text=True, env=dict(os.environ, OUT=out))
+        try:
+            with open(out) as f: return [json.loads(l) for l in f]
+        except FileNotFoundError: return []
+        finally:
+            if os.path.exists(out): os.unlink(out)
+
+    def test_post_agent_writes_agent_named(self):
+        r = self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "Agent",
+                           "tool_input": {"description": "fix things", "isolation": "remote"},
+                           "tool_response": {"content": [{"type": "text", "text": "started.\nagentId: a1b2c3d4e5f6a7b8c (use SendMessage)"}]}})
+        self.assertEqual([(x["kind"], x["target"], x["label"], x.get("iso")) for x in r], [("agent_named", "a1b2c3d4e5f6a7b8c", "fix things", "remote")])
+
+    def test_post_agent_without_id_writes_nothing(self):
+        self.assertEqual(self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_input": {"description": "x"}, "tool_response": "done"}), [])
+
+    def test_pre_agent_marks_remote(self):
+        r = self.run_hook({"hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"description": "x", "isolation": "remote"}})
+        self.assertEqual((r[0]["kind"], r[0]["iso"]), ("agent_spawn", "remote"))
+
+    def test_post_task_stop_writes_agent_stop(self):
+        r = self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "TaskStop", "tool_input": {"task_id": "a2ae6c129b432dfc7"}})
+        self.assertEqual([(x["agent"], x["kind"], x["label"]) for x in r], [("a2ae6c129b432dfc7", "agent_stop", "stopped")])
+
 if __name__ == "__main__":
     unittest.main()

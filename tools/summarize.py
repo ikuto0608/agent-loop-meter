@@ -180,9 +180,18 @@ def measure(events, desc=None):
 MAIN_NAME = "control tower (main)"
 
 
-def summarize(evs, since=None, include_open=False, include_main=False):
+STALE_HOURS = 6.0
+
+
+def summarize(evs, since=None, include_open=False, include_main=False, stale_hours=STALE_HOURS, now=None):
+    """Names: an agent_named event (PostToolUse on the Agent tool: description + the real agent id) wins. Only an
+    agent nobody named falls back to "the next new agent id takes the oldest agent_spawn description", and a
+    spawn with iso=remote (cloud) never enters that queue. An agent with no event for stale_hours (relative to
+    now, default: the last event in the log) and no agent_stop is stale: dropped even with include_open."""
     by, descs, queue = {}, {}, []
     evs = attach_ext(evs)
+    named = {e["target"]: e.get("label") or "" for e in evs if e.get("kind") == "agent_named" and e.get("target")}
+    end = now or (evs[-1]["_t"] if evs else None)
     mains = [e for e in evs if e.get("agent") == "main"]
     if include_main and mains:  # the main agent has no agent_start/stop: it runs from its first to its last event
         t0, t1 = mains[0], mains[-1]
@@ -190,16 +199,21 @@ def summarize(evs, since=None, include_open=False, include_main=False):
         descs["main"] = MAIN_NAME
     for e in evs:
         # agent_spawn (PreToolUse Agent) queues its description; the next new agent id takes the oldest one.
-        if e.get("kind") == "agent_spawn" and e.get("label"): queue.append(e["label"])
+        if e.get("kind") == "agent_spawn" and e.get("label") and e.get("iso") != "remote": queue.append(e["label"])
+        if e.get("kind") == "agent_named":   # its spawn is accounted for: take that description out of the queue
+            if e.get("label") in queue: queue.remove(e["label"])
+            continue
         if e.get("agent") in (None, *NON_AGENTS): continue
-        if e["agent"] not in by and queue: descs[e["agent"]] = queue.pop(0)
+        if e["agent"] not in by and queue and e["agent"] not in named: descs[e["agent"]] = queue.pop(0)
         by.setdefault(e["agent"], []).append(e)
     rows, skipped_open, skipped_nostart = [], 0, 0
     for events in by.values():
-        r = measure(events, descs.get(events[0]["agent"]))
+        aid = events[0]["agent"]
+        r = measure(events, named.get(aid) or descs.get(aid))
         if r is None: skipped_nostart += 1; continue
         if since and r["_start"].date() < since: continue
-        if not r["_stopped"] and not include_open: skipped_open += 1; continue
+        if not r["_stopped"] and (not include_open or (end and stale_hours and (end - events[-1]["_t"]).total_seconds() > stale_hours * 3600)):
+            skipped_open += 1; continue
         rows.append(r)
     rows.sort(key=lambda r: r["_start"])
     return rows, skipped_open, skipped_nostart
@@ -225,10 +239,11 @@ def main(argv=None):
     ap.add_argument("--since", help="only loops started on or after this date (YYYY-MM-DD)")
     ap.add_argument("--out", help="CSV path (default: stdout is the summary only)")
     ap.add_argument("--include-main", action="store_true", help='add one row for the main agent ("control tower")')
+    ap.add_argument("--stale-hours", type=float, default=STALE_HOURS, help="an open agent silent this long is stale (default 6)")
     ap.add_argument("--include-open", action="store_true", help="also count agents with no agent_stop")
     a = ap.parse_args(argv)
     since = datetime.date.fromisoformat(a.since) if a.since else None
-    rows, so, sn = summarize(load(a.log), since, a.include_open, a.include_main)
+    rows, so, sn = summarize(load(a.log), since, a.include_open, a.include_main, a.stale_hours)
     if a.out:
         with open(a.out, "w", encoding="utf-8", newline="") as f: write_csv(rows, f)
         print(f"wrote {a.out}")

@@ -4,7 +4,7 @@
       { "matcher": "Bash|Agent", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }
+      { "matcher": "Bash|Agent|TaskStop", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }
     ],
     "SubagentStart": [
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/loop-event.py\"" } ] }

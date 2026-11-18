@@ -75,12 +75,16 @@ One JSON object per line:
 
 | kind | source |
 |---|---|
-| `agent_spawn` | PreToolUse on the Agent tool; label = first 60 chars of its description |
+| `agent_spawn` | PreToolUse on the Agent tool; label = first 60 chars of its description; `iso: remote` for a cloud agent |
+| `agent_named` | PostToolUse on the Agent tool; label = description, `target` = the real agent id. Names beat the time-order guess; a cloud (`remote`) agent is never matched to a local one |
+| `agent_stop` (label `stopped`) | PostToolUse on TaskStop (it sends no SubagentStop), agent = the task id |
 | `agent_start` / `agent_stop` | SubagentStart / SubagentStop |
 | `lock_wait` / `lock_got` / `lock_free` | rules with kind `lock_wait` (before / after) and `lock_free` |
 | `test_start` / `test_end` (also `review_*`, `deploy_*`, any `"phase":"span"` kind) | before / after the command (`bg` = background run) |
 | any other rule kind (`pr`, `merge`, ...) | after the command |
 | `release` | `watch/release-watch.sh` |
+
+An agent with no event for 6 hours (`--stale-hours`) and no stop is stale: no card, not counted, its band stays.
 
 ### A script that takes the lock itself
 
