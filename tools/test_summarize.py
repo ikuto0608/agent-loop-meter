@@ -228,5 +228,42 @@ class Hook(unittest.TestCase):
         r = self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "TaskStop", "tool_input": {"task_id": "a2ae6c129b432dfc7"}})
         self.assertEqual([(x["agent"], x["kind"], x["label"]) for x in r], [("a2ae6c129b432dfc7", "agent_stop", "stopped")])
 
+class HandBack(unittest.TestCase):
+    """An agent hands back (agent_stop) while its gate still holds the lock, then comes back."""
+    def run_(self, evs, **kw):
+        rows, so, _ = S.summarize(prep(evs), **kw)
+        return rows, so
+
+    def test_stop_while_holding_the_lock_counts_as_test_until_back(self):
+        evs = [ev("10:00", "A", "agent_start", "gp"), ev("10:05", "A", "lock_wait", "heavy.lock"), ev("10:05", "A", "lock_got", "heavy.lock"),
+               ev("10:06", "A", "agent_stop"), ev("10:26", "A", "agent_start", "gp"), ev("10:30", "A", "agent_stop")]
+        (r,), _ = self.run_(evs)
+        self.assertEqual((r["impl_min"], r["test_min"], r["total_min"]), (10.0, 20.0, 30.0))
+
+    def test_stop_after_lock_free_is_idle(self):
+        evs = [ev("10:00", "A", "agent_start", "gp"), ev("10:05", "A", "lock_got", "heavy.lock"), ev("10:06", "A", "lock_free", "heavy.lock"),
+               ev("10:06", "A", "agent_stop"), ev("10:26", "A", "agent_start", "gp"), ev("10:30", "A", "agent_stop")]
+        (r,), _ = self.run_(evs)
+        self.assertEqual((r["test_min"], r["total_min"]), (0.0, 10.0))
+
+    def test_settled_skips_a_recent_hand_back_unless_final(self):
+        now = S.datetime.datetime.fromisoformat(f"{D}10:15:00+09:00")
+        a = [ev("10:00", "A", "agent_start", "gp"), ev("10:10", "A", "agent_stop")]
+        b = [ev("10:00", "B", "agent_start", "gp"), ev("10:09", "B", "agent_report"), ev("10:10", "B", "agent_stop")]
+        rows, so = self.run_(a + b, now=now, settled_min=20)
+        self.assertEqual(([r["task"] for r in rows], so), (["B"], 1))
+        rows, _ = self.run_(a + b, now=now + S.datetime.timedelta(minutes=30), settled_min=20)
+        self.assertEqual(sorted(r["task"] for r in rows), ["A", "B"])
+
+    def test_release_watch_line_after_merge_is_deploy(self):
+        evs = [ev("10:00", "A", "agent_start", "gp"), ev("10:10", "A", "merge", "pr merge"), ev("10:14", "release", "release", "v1"),
+               ev("10:15", "A", "agent_stop")]
+        (r,), _ = self.run_(evs)
+        self.assertEqual((r["deploy_min"], r["other_min"], r["released"]), (4.0, 1.0, "2026-11-17 10:14"))
+
+    def test_hook_writes_agent_report_on_handback(self):
+        r = Hook.run_hook(self, {"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback", "agent_id": "a1", "tool_input": {"message": "x"}})
+        self.assertEqual([(x["agent"], x["kind"]) for x in r], [("a1", "agent_report")])
+
 if __name__ == "__main__":
     unittest.main()

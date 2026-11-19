@@ -60,8 +60,15 @@ What counts as "test" or "merge" in *your* project is a list of regexes in `loop
 3. **Start the dashboard:** `node dashboard/server.mjs [--log <jsonl>] [--port 4317] [--before <csv>]`
    and open `http://127.0.0.1:4317` (add `?lang=ja` for Japanese). Log path defaults to `~/.claude/loop-events.jsonl`;
    the hook's `OUT` environment variable changes where it writes.
-4. **Optional:** `--before tasks.csv` adds a "before" strip. Columns: `task,category,started,...,impl_min,wait_min,test_min,review_min,deploy_min,other_min`
-   (and optionally `total_min`). Without the flag that section is hidden.
+4. **Latest loops strip:** the dashboard rebuilds "the latest 50 loops" from the log every minute (`/recent.csv`, which runs
+   `tools/summarize.py --settled-min 20 --last 50 --out -`; needs `python3`). **Optional:** `--before tasks.csv` adds a fixed
+   "before the tool" list as a second choice (a toggle). Columns: `task,category,started,...,impl_min,wait_min,test_min,review_min,deploy_min,other_min`
+   (and optionally `total_min`).
+   **Optional:** `--pr-repo owner/name [--gates ~/.claude/gate-results.jsonl]` adds a "per PR" table: one row per merged PR
+   (`gh pr list --state merged`, cached, refreshed every 3 min; works without gh, the table is just empty), with created → live
+   (from the PR's creation, or its first gate run when that came first), gate runs and each re-run's reason, lock wait, test
+   seconds (unit / e2e / prod-smoke) summed over the runs, and deploy wait (merge → the first `release` after it); day medians on top.
+   Gate lines are joined to PRs by branch name; PRs from before the gate log began show "before the log". `/pr-loop.json?days=N`.
 5. **Optional:** [`watch/release-watch.sh`](watch/release-watch.sh) is an example of watching an external deploy
    target (Heroku): it writes a `release` event when the release number changes. Replace its probe with yours.
 
@@ -128,9 +135,15 @@ One loop = `agent_start` -> `agent_stop` (agents never stopped are left out unle
 `lock_wait..lock_got` = wait; `test_start..test_end` = test (a background test lasts until the agent's next event; `full_e2e_min` = tests whose label contains `e2e`/`full`);
 `review_start..review_end` = review; `deploy_start..deploy_end` = deploy; everything else = impl.
 After the first `merge`, the time up to the last `release` / `release_check` / `deploy_end` is deploy and the rest is other; with no such event nothing after the merge is called deploy.
+**Hand-backs.** An agent often stops (SubagentStop) while its gate still runs and it still holds a lock, then comes back.
+The dashboard calls an agent *running* if it is started and not stopped, or ("in the background") stopped but holding/waiting
+for a lock (no `lock_free`, and no `release` after a merge of its own; at most 60 min), with a test still open, or with its last
+event less than 20 min ago and no final mark. The final mark is `agent_report` (the hook writes it on `PreToolUse` of
+`SubagentHandback`: add it to the PreToolUse matcher, see `hooks/settings.example.json`) or a TaskStop `agent_stop` "stopped".
+`summarize.py` keeps a hand-back and a come-back as one row; while the agent held its own lock the gap counts as test.
 When an agent stops while a background test (`bg: true`, never ended) is still open, the time until that agent's next event counts as test (drawn as a hatched pink band, "testing (background)"). A gap with no such test is **idle**: no band, counted nowhere, not even in "other".
 The main agent (the session you talk to) has no start/stop and is **not** summed; the dashboard shows it as a "control tower (main)" lane (pink while its own test runs, faint otherwise = waiting for agents, a small mark per agent handed out) and `--include-main` adds it as one row. An id whose `agent_start` was never captured stays as a faint dot labelled "(start not captured)" and gets no card.
-Prints loops, median and stage shares. Test: `python3 -m unittest tools/test_summarize.py`.
+Prints loops, median and stage shares. Test: `python3 -m unittest tools/test_summarize.py` and `node --test dashboard/dashboard.test.mjs`.
 
 Rule options: `"phase": "span"` writes `<kind>_start` before and `<kind>_end` after the command (default for `test`; shipped for `review` and `deploy`); `"point"` (default for other kinds) writes one line after it.
 The shipped `review` rule matches `gh pr review` and `/code-review` only. `deploy` is a span for `fly deploy`, `kubectl rollout`, `vercel deploy|--prod|promote`; `heroku releases` stays a one-shot `release_check` (a poll after the merge, not a duration). Edit both to your project.
@@ -171,7 +184,8 @@ Claude Code の 1 ループ (指示 -> 実装 -> テスト待ち -> テスト ->
 1. `hooks/settings.example.json` の `hooks` を、対象プロジェクトの `.claude/settings.local.json` に足す。
 2. `loop-meter.config.json` の `rules` に、自分のプロジェクトのテスト・マージ・ロックのコマンドを正規表現で書く (`match` / `kind` / `label`)。場所を変えるときは環境変数 `LOOP_METER_CONFIG`。無ければ既定の例で動く。
 3. `node dashboard/server.mjs` を起動して `http://127.0.0.1:4317/?lang=ja` を開く。
-4. 任意: `--before <csv>` で「前」の内訳の帯を出す。無ければその区画は隠れる。
+4. 「直近 50 本」の帯は記録から 1 分ごとに作り直す (python3 が要る)。任意: `--before <csv>` で「導入前 (固定)」を切り替えで出せる。
+5. 任意: `--pr-repo owner/name` で「PR ごと: 作成 → 本番」の表 (gate の回数とやり直しの理由・鍵待ち・テスト・本番反映待ち・日ごとの中央値) を出す。gate の記録は `--gates` (既定 `~/.claude/gate-results.jsonl`)。
 
 ## 自分の記録から「前」を作る
 

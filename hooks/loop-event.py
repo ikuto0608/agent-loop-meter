@@ -89,6 +89,10 @@ def main():
                 rec = {"kind": "agent_named", "label": (ti.get("description") or "")[:60], "target": aid}
                 if ti.get("isolation") == "remote":
                     rec["iso"] = "remote"
+        elif tool == "SubagentHandback" and ev == "PreToolUse":
+            # the agent hands in its final report: its loop is over (a SubagentStop alone may only be a hand-back
+            # while its gate still runs in the background)
+            rec = {"kind": "agent_report", "label": ""}
         elif tool == "TaskStop" and ev == "PostToolUse":
             # stopping a task sends no SubagentStop: write the stop ourselves
             tid = ti.get("task_id") or ti.get("shell_id")

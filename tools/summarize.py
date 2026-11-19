@@ -2,7 +2,8 @@
 """Turn the loop-events JSONL into a per-agent CSV (one row = one agent loop), same columns as
 examples/small-shop-site/before-tasks.csv, with source=measured. Stdlib only.
 
-  python3 tools/summarize.py [--log path] [--since 2026-11-17] [--out tasks.csv] [--include-open]
+  python3 tools/summarize.py [--log path] [--since 2026-11-17] [--out tasks.csv|-] [--include-open]
+                             [--settled-min 20] [--last 50]
 
 Stage rules (the same state machine as the dashboard). Default stage is impl. Priority when
 several apply: wait > test > review > deploy > impl.
@@ -12,7 +13,8 @@ several apply: wait > test > review > deploy > impl.
                                          background ends at once for the hook, so the script's own span is the real one
   review_start..review_end            -> review
   deploy_start..deploy_end            -> deploy
-  after the first merge: up to the last release/release_check/deploy_end event -> deploy;
+  after the first merge: up to the last release/release_check/deploy_end event (the agent's own, or the first
+                         release-watch "release" line after the merge) -> deploy;
                          after that (or when there is no such event) -> other
 An outside script can write its own lock events ("src":"script", "agent":"ext" unless it sets LOOP_METER_AGENT).
 They are handed to the agent that has a test with the same label open at that time (see attach_ext), so the
@@ -20,7 +22,8 @@ script's queueing counts as wait and is taken out of that test (wait > test). A 
 keeps counting as test after the lock is got, until the script's lock_free.
 Time counts only between agent_start and agent_stop (a resumed agent adds each stretch). The gap between a stop
 and the same agent's next event is test when a background test (bg=true) was still open at the stop (test_end with
-bg and nothing after it), else idle: counted nowhere. --include-main adds one row for the main agent.
+bg and nothing after it), or when the agent still held a lock it took itself (hook lock_got, no lock_free: its gate
+runs on), else idle: counted nowhere. --include-main adds one row for the main agent.
 """
 import argparse, csv, datetime, json, os, statistics, sys
 
@@ -91,7 +94,7 @@ def stamp(dt):
     return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
 
 
-def measure(events, desc=None):
+def measure(events, desc=None, releases=()):
     """events: one agent's events in time order. desc: the Agent-tool description tied to this agent
     (see summarize). Returns a row dict, or None without agent_start."""
     first = next((e for e in events if e["kind"] in ("agent_spawn", "agent_start")), None)
@@ -99,6 +102,10 @@ def measure(events, desc=None):
         return None
     merged = next((e["_t"] for e in events if e["kind"] == "merge"), None)
     rel = [e["_t"] for e in events if e["kind"] in RELEASE_KINDS and merged and e["_t"] >= merged]
+    # the release-watch writes "release" lines as its own source: the first one after this agent's merge (and
+    # before the agent's last event) is this merge going live
+    glob = [r for r in releases if merged and merged <= r <= events[-1]["_t"]]
+    if glob: rel.append(min(glob))
     last_rel = max(rel) if rel else None
     b = dict.fromkeys(STAGES, 0.0)
     e2e = 0.0
@@ -119,6 +126,8 @@ def measure(events, desc=None):
         elif ev_["kind"] == "agent_stop": pend = None
         elif ev_["kind"] == "lock_wait" and ev_.get("src") == "script" and pend is not None: covered.add(pend)
     gap = False   # stopped while a background test was still open: the time until the agent's next event is test
+    hook_lock = False   # the agent took a lock itself (hook lock_wait/lock_got, no lock_free yet)
+    lockgap = False     # this gap is "stopped while holding that lock": its gate keeps running -> test
     for idx, e in enumerate(events):
         t = e["_t"]
         if (active or gap) and last is not None:
@@ -130,13 +139,20 @@ def measure(events, desc=None):
             elif review: b["review_min"] += dt
             elif deploy: b["deploy_min"] += dt
             elif merged and t > merged and last >= merged:
-                b["deploy_min" if last_rel and last < last_rel else "other_min"] += dt
+                if last_rel and last < last_rel < t:   # the release lands inside this stretch: split it
+                    d = (last_rel - last).total_seconds() / 60
+                    b["deploy_min"] += d; b["other_min"] += dt - d
+                else: b["deploy_min" if last_rel and last < last_rel else "other_min"] += dt
             else: b["impl_min"] += dt
         last = t
         k = e["kind"]
         script = e.get("src") == "script"
         if k == "agent_stop" and (bg or held): gap = True   # the script (or bg test) still runs after the agent stopped
-        elif gap and not script: gap = False
+        elif k == "agent_stop" and hook_lock and e.get("label") != "stopped":
+            gap = lockgap = True   # handed back while holding the lock: its gate runs until the agent's next event
+        elif gap and not script:
+            gap = False
+            if lockgap: test = lockgap = False
         if bg and k not in ("test_start", "test_end") and not script and not gap:
             test = bg = False
         if k in ("agent_spawn", "agent_start"):
@@ -146,11 +162,14 @@ def measure(events, desc=None):
             active = False; stopped = True
             review = deploy = False
             if not gap: wait = test = bg = False
+            if lockgap: wait = False; test = True; label = "gate"
         elif k == "lock_wait":
             wait = True; script_wait = script
+            if not script: hook_lock = True
             if script: held = True; slabel = e.get("label") or ""
         elif k in ("lock_got", "lock_free"):
             wait = False
+            if not script: hook_lock = k == "lock_got"
             if script and k == "lock_got": test = True; label = e.get("label") or label   # got: the script's test runs
             elif script:   # lock_free: the script says the test is over
                 held = test = bg = False
@@ -183,7 +202,19 @@ MAIN_NAME = "control tower (main)"
 STALE_HOURS = 6.0
 
 
-def summarize(evs, since=None, include_open=False, include_main=False, stale_hours=STALE_HOURS, now=None):
+def settled(events, end, settled_min):
+    """True when this agent's loop is over: a final mark after its last agent_start (agent_report from
+    SubagentHandback, or a TaskStop "stopped"), or its last event is more than settled_min before `end`.
+    An agent that handed back (agent_stop) may still be busy behind the scenes and come back."""
+    if not settled_min or end is None: return True
+    starts = [i for i, e in enumerate(events) if e["kind"] == "agent_start"]
+    tail = events[starts[-1]:] if starts else events
+    if any(e["kind"] == "agent_report" or (e["kind"] == "agent_stop" and e.get("label") == "stopped") for e in tail):
+        return True
+    return (end - events[-1]["_t"]).total_seconds() > settled_min * 60
+
+
+def summarize(evs, since=None, include_open=False, include_main=False, stale_hours=STALE_HOURS, now=None, settled_min=0):
     """Names: an agent_named event (PostToolUse on the Agent tool: description + the real agent id) wins. Only an
     agent nobody named falls back to "the next new agent id takes the oldest agent_spawn description", and a
     spawn with iso=remote (cloud) never enters that queue. An agent with no event for stale_hours (relative to
@@ -206,12 +237,14 @@ def summarize(evs, since=None, include_open=False, include_main=False, stale_hou
         if e.get("agent") in (None, *NON_AGENTS): continue
         if e["agent"] not in by and queue and e["agent"] not in named: descs[e["agent"]] = queue.pop(0)
         by.setdefault(e["agent"], []).append(e)
+    releases = sorted(e["_t"] for e in evs if e.get("kind") == "release")
     rows, skipped_open, skipped_nostart = [], 0, 0
     for events in by.values():
         aid = events[0]["agent"]
-        r = measure(events, named.get(aid) or descs.get(aid))
+        r = measure(events, named.get(aid) or descs.get(aid), releases)
         if r is None: skipped_nostart += 1; continue
         if since and r["_start"].date() < since: continue
+        if not settled(events, end, settled_min): skipped_open += 1; continue
         if not r["_stopped"] and (not include_open or (end and stale_hours and (end - events[-1]["_t"]).total_seconds() > stale_hours * 3600)):
             skipped_open += 1; continue
         rows.append(r)
@@ -241,9 +274,17 @@ def main(argv=None):
     ap.add_argument("--include-main", action="store_true", help='add one row for the main agent ("control tower")')
     ap.add_argument("--stale-hours", type=float, default=STALE_HOURS, help="an open agent silent this long is stale (default 6)")
     ap.add_argument("--include-open", action="store_true", help="also count agents with no agent_stop")
+    ap.add_argument("--settled-min", type=float, default=0,
+                    help="skip an agent whose last event is less than this many minutes ago (vs now) and that has no "
+                         "final mark (agent_report / TaskStop): it may still be busy in the background (default 0 = off)")
+    ap.add_argument("--last", type=int, default=0, help="keep only the newest N loops, newest first (default: all, oldest first)")
     a = ap.parse_args(argv)
     since = datetime.date.fromisoformat(a.since) if a.since else None
-    rows, so, sn = summarize(load(a.log), since, a.include_open, a.include_main, a.stale_hours)
+    now = datetime.datetime.now().astimezone() if a.settled_min else None
+    rows, so, sn = summarize(load(a.log), since, a.include_open, a.include_main, a.stale_hours, now, a.settled_min)
+    if a.last > 0: rows = rows[::-1][:a.last]
+    if a.out == "-":   # CSV only, on stdout (the dashboard reads this)
+        write_csv(rows, sys.stdout); return
     if a.out:
         with open(a.out, "w", encoding="utf-8", newline="") as f: write_csv(rows, f)
         print(f"wrote {a.out}")
