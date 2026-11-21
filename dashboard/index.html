@@ -330,7 +330,15 @@ function drawTicks(t0, span) {
   }
 }
 const color = { gap: "var(--test)", work: "var(--work)", test: "var(--test)", wait: "var(--wait)", review: "var(--review)", deploy: "var(--deploy)" };
+// One redraw per frame: the replay on connect sends every event in the log, and redrawing the whole page
+// for each one made the first load grow with the history (11/21: 9,710 events took tens of seconds).
+let renderQueued = false;
 function render() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; renderNow(); });
+}
+function renderNow() {
   const st = new Map([...agents.values()].map(a => [a, statusOf(a)]));
   const live = [...agents.values()].filter(a => st.get(a).status !== "done");
   document.getElementById("nActive").textContent = live.length;
